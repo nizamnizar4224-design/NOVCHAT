@@ -1,4 +1,3 @@
-
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, ExternalLink, Film, Loader2, Play, RotateCcw, Trash2, Volume2, X } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -18,15 +17,52 @@ export function VideosPage({ videos, channels }: VideosPageProps) {
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<VideoPackage | null>(null);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
-  const handleDelete = async (pkg: VideoPackage) => {
+  const requestDelete = (pkg: VideoPackage) => {
+    const isPublished = pkg.status === "published" || Boolean(pkg.youtube_video_id || pkg.youtube_url);
+    if (isPublished) return;
     const label = pkg.title ?? pkg.topic ?? "this video";
-    if (!window.confirm(`Delete "${label}" from Video History? This also removes its saved video, voiceover and thumbnail files from Storage. A video already published to YouTube will NOT be deleted from YouTube.`)) return;
+    if (!window.confirm(`Are you sure you want to permanently delete this video?\n\n${label}`)) return;
+    setDeleteError(null);
+    setPasswordError(null);
+    setDeletePassword("");
+    setPendingDelete(pkg);
+  };
 
+  const handleDelete = async () => {
+    if (!pendingDelete || !deletePassword) {
+      setPasswordError("Enter your account password to confirm deletion.");
+      return;
+    }
+    const pkg = pendingDelete;
     setDeletingId(pkg.id);
     setDeleteError(null);
+    setPasswordError(null);
     try {
-      const paths = [...new Set([pkg.final_video_path, pkg.video_path, pkg.voice_path, pkg.thumbnail_path]
+      // The login screen uses Supabase email/password authentication. Re-authenticate
+      // the current owner before allowing this destructive action.
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData.user?.email) throw new Error("Could not verify the signed-in owner account. Please sign in again.");
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email: userData.user.email,
+        password: deletePassword,
+      });
+      if (authError) throw new Error("Password is incorrect. Video was not deleted.");
+
+      // Re-check publication status immediately before deletion.
+      const { data: latest, error: latestError } = await supabase
+        .from("video_packages")
+        .select("id,status,youtube_video_id,youtube_url,final_video_path,video_path,voice_path,thumbnail_path")
+        .eq("id", pkg.id)
+        .single();
+      if (latestError) throw latestError;
+      if (latest.status === "published" || latest.youtube_video_id || latest.youtube_url) {
+        throw new Error("Published videos cannot be deleted from this website.");
+      }
+      const paths = [...new Set([latest.final_video_path, latest.video_path, latest.voice_path, latest.thumbnail_path]
         .filter((path): path is string => Boolean(path) && !/^https?:\/\//i.test(path!)))];
 
       if (paths.length > 0) {
@@ -38,19 +74,16 @@ export function VideosPage({ videos, channels }: VideosPageProps) {
       if (deleteDbError) throw deleteDbError;
 
       if (selectedId === pkg.id) setSelectedId(null);
+      setPendingDelete(null);
+      setDeletePassword("");
       await videos.refresh();
     } catch (err) {
-  console.error("Video delete error:", err);
-
-  const message =
-    err instanceof Error
-      ? err.message
-      : typeof err === "object" && err !== null && "message" in err
-        ? String(err.message)
-        : String(err);
-
-  setDeleteError(message);
-}
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.toLowerCase().includes("password")) setPasswordError(message);
+      else setDeleteError(message);
+    } finally {
+      setDeletingId(null);
+    }
   };
   const { loading, error } = videos;
   const channelNames = new Map(channels.map((channel) => [channel.id, channel.name]));
@@ -149,13 +182,13 @@ export function VideosPage({ videos, channels }: VideosPageProps) {
                     <td className="px-6 py-4">
                       <button
                         type="button"
-                        onClick={(event) => { event.stopPropagation(); void handleDelete(pkg); }}
-                        disabled={deletingId === pkg.id}
+                        onClick={(event) => { event.stopPropagation(); requestDelete(pkg); }}
+                        disabled={deletingId === pkg.id || pkg.status === "published" || Boolean(pkg.youtube_video_id || pkg.youtube_url)}
                         className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/30 px-2.5 py-1.5 text-xs font-medium text-rose-300 transition hover:border-rose-400/60 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
                         aria-label={`Delete ${pkg.title ?? pkg.topic ?? "video"}`}
                       >
                         {deletingId === pkg.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />}
-                        {deletingId === pkg.id ? "Deleting" : "Delete"}
+                        {deletingId === pkg.id ? "Deleting" : (pkg.status === "published" || pkg.youtube_video_id || pkg.youtube_url) ? "Published" : "Delete"}
                       </button>
                     </td>
                   </tr>
@@ -165,6 +198,36 @@ export function VideosPage({ videos, channels }: VideosPageProps) {
           </div>
         )}
       </Card>
+
+      {pendingDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-video-title">
+          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
+            <h2 id="delete-video-title" className="text-lg font-semibold text-zinc-50">Confirm permanent deletion</h2>
+            <p className="mt-2 text-sm text-zinc-300">Are you sure you want to permanently delete this video?</p>
+            <p className="mt-1 text-sm font-medium text-zinc-100">{pendingDelete.title ?? pendingDelete.topic ?? "Untitled video"}</p>
+            <label htmlFor="delete-owner-password" className="mt-4 block text-sm font-medium text-zinc-200">Enter your account password</label>
+            <input
+              id="delete-owner-password"
+              type="password"
+              autoComplete="current-password"
+              value={deletePassword}
+              onChange={(event) => setDeletePassword(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") void handleDelete(); }}
+              className={`${inputClass} mt-1.5 w-full`}
+              placeholder="Account password"
+              autoFocus
+            />
+            {passwordError && <p className="mt-2 text-sm text-rose-300">{passwordError}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => { setPendingDelete(null); setDeletePassword(""); setPasswordError(null); }} disabled={deletingId !== null} className="rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800">Cancel</button>
+              <button type="button" onClick={() => void handleDelete()} disabled={deletingId !== null || !deletePassword} className="inline-flex items-center gap-2 rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50">
+                {deletingId ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Trash2 className="h-4 w-4" aria-hidden="true" />}
+                {deletingId ? "Deleting..." : "Yes, permanently delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selected && (
         <VideoDetailPanel
@@ -511,6 +574,3 @@ function ThumbnailImage({ path }: { path: string }) {
   }
   return <img src={url} alt="Generated thumbnail" className="mt-3 w-full rounded-lg border border-zinc-800" />;
 }
-
-
-
