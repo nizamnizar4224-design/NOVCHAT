@@ -119,7 +119,7 @@ async function thumbnailStep(pkg: VideoPackage, s: Settings, channel: Channel): 
 async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel): Promise<PackageStatus> {
   const provider = getAssemblyProvider(s.assembly_provider, s.assembly_api_key, s.assembly_template_id);
   if (!provider || !pkg.voice_path || !pkg.script_segments) {
-    throw new PermanentError("Creatomate is required for video generation. Add its API key and Template ID in API Settings.");
+    throw new PermanentError("Creatomate is required for video generation. Add its API key in API Settings.");
   }
 
   if (!pkg.assembly_render_id) {
@@ -183,7 +183,7 @@ async function advancePackage(
     const channel = pkg.channel_id ? channels.get(pkg.channel_id) : undefined;
     if (!channel) throw new PermanentError("This video's channel was deleted");
     if (pkg.status === "queued" || pkg.status === "voicing") requirePrepareConfig(s, channel);
-    if (pkg.status === "assembling") requireFields(s, ["assembly_api_key", "assembly_template_id"], "API Settings");
+    if (pkg.status === "assembling") requireFields(s, ["assembly_api_key"], "API Settings");
     if (pkg.status === "thumbnail") requireFields(s, ["openai_api_key"], "API Settings");
 
     const next = await runStep(pkg, s, channel);
