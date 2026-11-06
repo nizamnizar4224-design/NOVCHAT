@@ -39,6 +39,7 @@ export type VideoPackage = {
   video_path: string | null;
   final_video_path: string | null;
   script_segments: ScriptSegment[] | null;
+  scene_assets: { start_sec: number; end_sec: number; storage_path: string; media_type: "video" | "image"; source: string; source_url: string; contributor: string | null; query: string }[] | null;
   attempts: number;
   next_attempt_at: string | null;
   failed_from: PackageStatus | null;

@@ -19,7 +19,7 @@ import {
   downloadRemoteFile,
   fetchTrendingTopics,
   generateThumbnailImage,
-  generateSceneImage,
+  findPixabayMedia,
   synthesizeVoiceover,
   writeScriptPackage,
 } from "./providers.ts";
@@ -62,6 +62,82 @@ async function recentTopics(channelId: string): Promise<string[]> {
   return (data ?? []).map((row) => row.topic as string);
 }
 
+
+async function prepareSceneAssets(packageId: string, segments: NonNullable<VideoPackage["script_segments"]>): Promise<NonNullable<VideoPackage["scene_assets"]>> {
+  const apiKey = Deno.env.get("PIXABAY_API_KEY")?.trim();
+  if (!apiKey) {
+    console.warn("PIXABAY_API_KEY is not configured; Creatomate will use its designed fallback scenes.");
+    return [];
+  }
+
+  const assets: NonNullable<VideoPackage["scene_assets"]> = [];
+  const selected = segments.filter((segment) => segment.broll.trim()).slice(0, 14);
+  for (const [index, segment] of selected.entries()) {
+    const query = segment.broll.trim().slice(0, 100);
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(query.toLowerCase()));
+    const queryKey = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    let cached: any = null;
+
+    const { data: cacheRow, error: cacheReadError } = await db
+      .from("stock_media_cache")
+      .select("storage_path,media_type,source_url,contributor")
+      .eq("query_key", queryKey)
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+    if (cacheReadError) throw new Error(`Could not read stock media cache: ${cacheReadError.message}`);
+    cached = cacheRow;
+
+    let assetInfo = cached;
+    if (!assetInfo) {
+      await setActivity(`[${channelSafeName(packageId)}] Searching stock visual ${index + 1}/${selected.length}`);
+      try {
+        const result = await findPixabayMedia(apiKey, query);
+        if (!result) {
+          console.warn(`No Pixabay stock result for scene ${index + 1}: ${query}`);
+          continue;
+        }
+        const storagePath = `_stock-cache/${queryKey}.${result.extension}`;
+        await uploadFile(storagePath, result.bytes, result.mimeType);
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        const { error: cacheWriteError } = await db.from("stock_media_cache").upsert({
+          query_key: queryKey,
+          query,
+          storage_path: storagePath,
+          media_type: result.mediaType,
+          source_url: result.sourceUrl,
+          contributor: result.contributor,
+          expires_at: expiresAt,
+        }, { onConflict: "query_key" });
+        if (cacheWriteError) throw new Error(`Could not cache stock media result: ${cacheWriteError.message}`);
+        assetInfo = {
+          storage_path: storagePath, media_type: result.mediaType,
+          source_url: result.sourceUrl, contributor: result.contributor,
+        };
+      } catch (error) {
+        // Stock search is an enhancement, not a reason to lose the generated script/video.
+        console.warn(`Stock visual skipped for scene ${index + 1}:`, error instanceof Error ? error.message : String(error));
+        continue;
+      }
+    }
+
+    assets.push({
+      start_sec: segment.start_sec,
+      end_sec: segment.end_sec,
+      storage_path: assetInfo.storage_path,
+      media_type: assetInfo.media_type,
+      source: "pixabay",
+      source_url: assetInfo.source_url,
+      contributor: assetInfo.contributor ?? null,
+      query,
+    });
+  }
+  return assets;
+}
+
+function channelSafeName(packageId: string): string {
+  return `Video ${packageId.slice(0, 8)}`;
+}
+
 async function writeScriptStep(pkg: VideoPackage, s: Settings, channel: Channel): Promise<PackageStatus> {
   await setActivity(`[${channel.name}] Analyzing trends`);
   const trends = await fetchTrendingTopics(channel.target_region ?? "US");
@@ -74,7 +150,9 @@ async function writeScriptStep(pkg: VideoPackage, s: Settings, channel: Channel)
     trends,
     past,
   );
-  await updatePackage(pkg.id, { ...written, status: "voicing" });
+  await setActivity(`[${channel.name}] Finding stock visuals for each scene`);
+  const sceneAssets = await prepareSceneAssets(pkg.id, written.script_segments);
+  await updatePackage(pkg.id, { ...written, scene_assets: sceneAssets, status: "voicing" });
   return "voicing";
 }
 
@@ -125,39 +203,17 @@ async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel):
 
   if (!pkg.assembly_render_id) {
     await setActivity(`[${channel.name}] Submitting script and voiceover to Creatomate`);
-    const imageModel = s.openai_image_model?.trim() || DEFAULT_OPENAI_IMAGE_MODEL;
-    const visualSegments = [];
-    for (const [index, segment] of pkg.script_segments.entries()) {
-      const existingPath = (segment as typeof segment & { visual_path?: string }).visual_path;
-      let visualPath = existingPath;
-      if (!visualPath) {
-        await setActivity(`[${channel.name}] Creating visual ${index + 1}/${pkg.script_segments.length}`);
-        const image = await generateSceneImage(s.openai_api_key!, imageModel, {
-          title: pkg.title ?? pkg.topic ?? "YouTube explainer",
-          label: segment.label,
-          narration: segment.narration,
-          broll: segment.broll,
-        });
-        visualPath = `${pkg.id}/scene-${index + 1}.png`;
-        await uploadFile(visualPath, image.bytes, image.mimeType);
-        // Persist each generated image path so a later retry does not pay to regenerate it.
-        const updatedSegments = pkg.script_segments.map((item, itemIndex) =>
-          itemIndex === index
-            ? { ...item, visual_path: visualPath }
-            : item,
-        );
-        await updatePackage(pkg.id, { script_segments: updatedSegments });
-      }
-      visualSegments.push({
-        ...segment,
-        visualUrl: await createSignedFileUrl(visualPath, SIGNED_LINK_TTL_SECONDS),
-      });
-    }
     const job = buildAssemblyJob({
       packageId: pkg.id,
       title: pkg.title ?? "",
       voiceUrl: await createSignedFileUrl(pkg.voice_path, SIGNED_LINK_TTL_SECONDS),
-      segments: visualSegments,
+      segments: pkg.script_segments,
+      assets: await Promise.all((pkg.scene_assets ?? []).map(async (asset) => ({
+        start_sec: asset.start_sec,
+        end_sec: asset.end_sec,
+        media_type: asset.media_type,
+        url: await createSignedFileUrl(asset.storage_path, SIGNED_LINK_TTL_SECONDS),
+      }))),
     });
     const renderId = await provider.submit(job);
     await updatePackage(pkg.id, { assembly_render_id: renderId });
@@ -229,7 +285,7 @@ async function advancePackage(
     const channel = pkg.channel_id ? channels.get(pkg.channel_id) : undefined;
     if (!channel) throw new PermanentError("This video's channel was deleted");
     if (pkg.status === "queued" || pkg.status === "voicing") requirePrepareConfig(s, channel);
-    if (pkg.status === "assembling") requireFields(s, ["assembly_api_key", "openai_api_key"], "API Settings");
+    if (pkg.status === "assembling") requireFields(s, ["assembly_api_key"], "API Settings");
     if (pkg.status === "thumbnail") requireFields(s, ["openai_api_key"], "API Settings");
 
     const next = await runStep(pkg, s, channel);

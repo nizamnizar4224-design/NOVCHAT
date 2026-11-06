@@ -130,7 +130,7 @@ export async function writeScriptPackage(
     "  label (string, 2-4 word name of this beat),",
     "  narration (string, spoken words only: no stage directions, no timestamps, no speaker names),",
     `  camera_angle (one of: ${CAMERA_ANGLES.join(", ")}),`,
-    "  broll (string, a concrete background or B-roll visual to show during this segment, specific enough to search stock footage for; empty string if the avatar should stay full screen),",
+    "  broll (string, a concise English stock-media search query of 3-8 concrete keywords describing the best real-world footage for this segment; avoid abstract ideas; empty string only if no visual is needed),",
     "  on_screen_text (string, at most 6 words of overlay text for key moments, or empty string)).",
     "Do not include start or end times; they are calculated from the narration afterwards.",
   ].join("\n");
@@ -173,6 +173,75 @@ export async function synthesizeVoiceover(apiKey: string, voiceId: string, text:
   return new Uint8Array(await res.arrayBuffer());
 }
 
+
+export type StockMediaResult = {
+  bytes: Uint8Array;
+  mimeType: string;
+  extension: string;
+  source: "pixabay";
+  sourceUrl: string;
+  mediaType: "video" | "image";
+  contributor: string | null;
+  query: string;
+};
+
+/** Search Pixabay for a relevant video first, then a still image. Search result URLs
+ * are downloaded to our own Storage; Pixabay does not permit permanent image hotlinking. */
+export async function findPixabayMedia(apiKey: string, query: string): Promise<StockMediaResult | null> {
+  const cleanQuery = query.trim().slice(0, 100);
+  if (!cleanQuery) return null;
+
+  const videoUrl = new URL("https://pixabay.com/api/videos/");
+  videoUrl.searchParams.set("key", apiKey);
+  videoUrl.searchParams.set("q", cleanQuery);
+  videoUrl.searchParams.set("per_page", "5");
+  videoUrl.searchParams.set("safesearch", "true");
+  try {
+    const response = await fetchWithRetry(videoUrl.toString(), {}, { retries: 1, timeoutMs: 20_000 });
+    if (response.ok) {
+      const payload = await response.json();
+      const hit = (payload?.hits ?? []).find((item: any) => item?.videos?.medium?.url || item?.videos?.small?.url);
+      const rendition = hit?.videos?.medium?.url ? hit.videos.medium : hit?.videos?.small;
+      if (hit && rendition?.url) {
+        const bytes = await downloadRemoteFile(rendition.url);
+        if (bytes.byteLength > 1024) return {
+          bytes, mimeType: "video/mp4", extension: "mp4", source: "pixabay",
+          sourceUrl: String(hit.pageURL ?? ""), mediaType: "video",
+          contributor: typeof hit.user === "string" ? hit.user : null, query: cleanQuery,
+        };
+      }
+    } else if (response.status !== 429) {
+      console.warn("Pixabay video search unavailable:", response.status, (await response.text()).slice(0, 200));
+    }
+  } catch (error) {
+    console.warn("Pixabay video search failed; trying image:", error instanceof Error ? error.message : String(error));
+  }
+
+  const imageUrl = new URL("https://pixabay.com/api/");
+  imageUrl.searchParams.set("key", apiKey);
+  imageUrl.searchParams.set("q", cleanQuery);
+  imageUrl.searchParams.set("image_type", "photo");
+  imageUrl.searchParams.set("orientation", "horizontal");
+  imageUrl.searchParams.set("safesearch", "true");
+  imageUrl.searchParams.set("per_page", "5");
+  const response = await fetchWithRetry(imageUrl.toString(), {}, { retries: 1, timeoutMs: 20_000 });
+  if (!response.ok) {
+    if (response.status === 429) throw new Error("Pixabay rate limit reached; retry on the next scheduled run");
+    throw new Error(`Pixabay image search failed (${response.status}): ${(await response.text()).slice(0, 250)}`);
+  }
+  const payload = await response.json();
+  const hit = (payload?.hits ?? []).find((item: any) => item?.largeImageURL || item?.webformatURL);
+  const source = hit?.largeImageURL ?? hit?.webformatURL;
+  if (!hit || !source) return null;
+  const bytes = await downloadRemoteFile(source);
+  if (bytes.byteLength <= 1024) return null;
+  return {
+    bytes, mimeType: "image/jpeg", extension: "jpg", source: "pixabay",
+    sourceUrl: String(hit.pageURL ?? ""), mediaType: "image",
+    contributor: typeof hit.user === "string" ? hit.user : null, query: cleanQuery,
+  };
+}
+
 export type ThumbnailImage = { bytes: Uint8Array; mimeType: string; extension: string };
 
 export async function generateThumbnailImage(apiKey: string, model: string, prompt: string): Promise<ThumbnailImage> {
@@ -191,49 +260,6 @@ export async function generateThumbnailImage(apiKey: string, model: string, prom
   if (typeof b64 !== "string") throw new Error("OpenAI returned no thumbnail image");
   const mimeType = "image/png";
   return { bytes: Uint8Array.from(atob(b64), (char) => char.charCodeAt(0)), mimeType, extension: "png" };
-}
-
-
-/** Generate a scene-specific 16:9 visual using the configured OpenAI image model. */
-export async function generateSceneImage(
-  apiKey: string,
-  model: string,
-  input: { title: string; label: string; narration: string; broll: string },
-): Promise<ThumbnailImage> {
-  const prompt = [
-    "Create a photorealistic cinematic 16:9 documentary B-roll still for a YouTube explainer video.",
-    `Overall video topic: ${input.title}.`,
-    `Scene: ${input.label}.`,
-    `Narration context: ${input.narration.slice(0, 900)}.`,
-    `Visual direction: ${input.broll.slice(0, 400)}.`,
-    "Show a clear relevant real-world visual, editorial documentary photography, natural detailed lighting, strong composition.",
-    "No words, no letters, no captions, no logos, no watermarks, no graphic UI, no collage, no split screen.",
-  ].join(" ");
-  const res = await fetchWithRetry(
-    `${OPENAI_BASE}/images/generations`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        prompt,
-        size: "1536x1024",
-        quality: "medium",
-        output_format: "png",
-        n: 1,
-      }),
-    },
-    { timeoutMs: 150_000 },
-  );
-  await assertOk(res, "OpenAI scene image generation");
-  const json = await res.json();
-  const b64 = json?.data?.[0]?.b64_json;
-  if (typeof b64 !== "string") throw new Error("OpenAI returned no scene image");
-  return {
-    bytes: Uint8Array.from(atob(b64), (char) => char.charCodeAt(0)),
-    mimeType: "image/png",
-    extension: "png",
-  };
 }
 
 export async function startAvatarRender(apiKey: string, avatarId: string, audioUrl: string): Promise<string> {
