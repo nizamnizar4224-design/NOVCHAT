@@ -22,7 +22,6 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
   const [secrets, setSecrets] = useState(EMPTY_SECRETS);
   const [textModel, setTextModel] = useState(settings.openai_text_model ?? "");
   const [imageModel, setImageModel] = useState(settings.openai_image_model ?? "");
-  const [templateId, setTemplateId] = useState(settings.assembly_template_id ?? "");
   const [provider, setProvider] = useState<AssemblyProviderId>(settings.assembly_provider);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ tone: "success" | "error"; text: string } | null>(null);
@@ -37,7 +36,6 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
       openai_text_model: textModel.trim() || null,
       openai_image_model: imageModel.trim() || null,
       assembly_provider: provider,
-      assembly_template_id: templateId.trim() || null,
     };
     for (const key of Object.keys(secrets) as SecretKey[]) {
       const value = secrets[key].trim();
@@ -146,11 +144,9 @@ HeyGen is disabled. The pipeline sends the ElevenLabs voiceover and script infor
           </select>
         </div>
         {provider === "creatomate" && (
-          <div>
-            <FieldLabel htmlFor="assembly_template_id">Creatomate Template ID</FieldLabel>
-            <input id="assembly_template_id" value={templateId} onChange={(event) => setTemplateId(event.target.value)} className={`${inputClass} font-mono`} placeholder="Paste your Creatomate template ID" spellCheck={false} />
-            <p className="mt-1.5 text-xs text-zinc-500">Your Creatomate template should contain dynamic elements named Video-Title, Narration-Audio, Caption-Text and Scene-Plan. Add your own visual/background layers to the template.</p>
-          </div>
+          <p className="text-sm text-zinc-400">
+            Template-free mode is enabled. The server builds a separate Creatomate RenderScript for every video from its script scenes, narration, timing and captions. No Template ID is required.
+          </p>
         )}
         <SecretField
           id="assembly_api_key"
