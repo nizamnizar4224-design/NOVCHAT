@@ -24,6 +24,7 @@ export type RawSegment = {
   camera_angle: CameraAngle;
   broll: string;
   on_screen_text: string | null;
+  visual_type?: "video" | "image";
 };
 
 export type ScriptSegment = RawSegment & {

@@ -115,24 +115,68 @@ async function thumbnailStep(pkg: VideoPackage, s: Settings, channel: Channel): 
   return "ready";
 }
 
-/** Search Pixabay for a scene-matching stock clip, cache the file in private Supabase Storage, and return a short-lived URL. */
-async function findPixabayClip(apiKey: string, query: string, packageId: string, sceneIndex: number): Promise<string | null> {
-  const endpoint = new URL("https://pixabay.com/api/videos/");
-  endpoint.searchParams.set("key", apiKey);
-  endpoint.searchParams.set("q", query.slice(0, 100));
-  endpoint.searchParams.set("per_page", "3");
-  endpoint.searchParams.set("safesearch", "true");
-  const response = await fetch(endpoint.toString());
-  if (!response.ok) throw new Error(`Pixabay search failed (${response.status})`);
-  const payload = await response.json();
-  const hits = Array.isArray(payload.hits) ? payload.hits : [];
-  const hit = hits.find((item: any) => item?.videos?.medium?.url || item?.videos?.small?.url);
-  const remoteUrl = hit?.videos?.medium?.url ?? hit?.videos?.small?.url;
-  if (typeof remoteUrl !== "string") return null;
-  const bytes = await downloadRemoteFile(remoteUrl);
-  const path = `${packageId}/stock-scene-${sceneIndex + 1}.mp4`;
-  await uploadFile(path, bytes, "video/mp4");
-  return await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS);
+/** Reject obviously unrelated results when Pixabay returns descriptive tags. */
+function pixabayTagMatch(query: string, tags: unknown): boolean {
+  if (typeof tags !== "string" || !tags.trim()) return true;
+  const stop = new Set(["the", "and", "with", "for", "from", "into", "about", "show", "showing", "indian", "close", "up"]);
+  const words = query.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2 && !stop.has(word));
+  const tagWords = new Set(tags.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2));
+  return words.some((word) => tagWords.has(word) || [...tagWords].some((tag) => tag.includes(word) || word.includes(tag)));
+}
+
+/** Search Pixabay for a relevant scene asset. A video is used only if it can cover the
+ * complete scene at native speed; otherwise a relevant still image is used instead. */
+async function findPixabayVisual(
+  apiKey: string,
+  query: string,
+  packageId: string,
+  sceneIndex: number,
+  requiredSeconds: number,
+  preferredType: "video" | "image",
+): Promise<{ url: string; mediaType: "video" | "image"; duration: number | null } | null> {
+  if (preferredType === "video") {
+    const videoEndpoint = new URL("https://pixabay.com/api/videos/");
+    videoEndpoint.searchParams.set("key", apiKey);
+    videoEndpoint.searchParams.set("q", query.slice(0, 100));
+    videoEndpoint.searchParams.set("per_page", "10");
+    videoEndpoint.searchParams.set("safesearch", "true");
+    const videoResponse = await fetch(videoEndpoint.toString());
+    if (!videoResponse.ok) throw new Error(`Pixabay video search failed (${videoResponse.status})`);
+    const videoPayload = await videoResponse.json();
+    const hits = Array.isArray(videoPayload.hits) ? videoPayload.hits : [];
+    const suitable = hits.find((hit: any) =>
+      Number(hit?.duration) >= requiredSeconds &&
+      (hit?.videos?.medium?.url || hit?.videos?.small?.url) && pixabayTagMatch(query, hit?.tags)
+    );
+    if (suitable) {
+      const remoteUrl = suitable.videos.medium?.url ?? suitable.videos.small?.url;
+      const bytes = await downloadRemoteFile(remoteUrl);
+      const path = `${packageId}/stock-scene-${sceneIndex + 1}.mp4`;
+      await uploadFile(path, bytes, "video/mp4");
+      return { url: await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS), mediaType: "video", duration: Number(suitable.duration) };
+    }
+  }
+
+  // If no clip can cover the scene, do not stretch/loop a short clip. Use a relevant
+  // still image with a subtle pan/zoom for the full scene duration instead.
+  const imageEndpoint = new URL("https://pixabay.com/api/");
+  imageEndpoint.searchParams.set("key", apiKey);
+  imageEndpoint.searchParams.set("q", query.slice(0, 100));
+  imageEndpoint.searchParams.set("image_type", "photo");
+  imageEndpoint.searchParams.set("orientation", "horizontal");
+  imageEndpoint.searchParams.set("safesearch", "true");
+  imageEndpoint.searchParams.set("per_page", "5");
+  const imageResponse = await fetch(imageEndpoint.toString());
+  if (!imageResponse.ok) throw new Error(`Pixabay image search failed (${imageResponse.status})`);
+  const imagePayload = await imageResponse.json();
+  const imageHits = Array.isArray(imagePayload.hits) ? imagePayload.hits : [];
+  const imageHit = imageHits.find((hit: any) => pixabayTagMatch(query, hit?.tags)) ?? null;
+  const imageUrl = imageHit?.largeImageURL ?? imageHit?.webformatURL;
+  if (typeof imageUrl !== "string") return null;
+  const bytes = await downloadRemoteFile(imageUrl);
+  const path = `${packageId}/stock-scene-${sceneIndex + 1}.jpg`;
+  await uploadFile(path, bytes, "image/jpeg");
+  return { url: await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS), mediaType: "image", duration: null };
 }
 
 /** Creatomate assembly step: submit once, poll on later scheduler ticks, then persist final MP4. */
@@ -151,12 +195,20 @@ async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel):
       segments: pkg.script_segments,
     });
     if (s.pixabay_api_key?.trim()) {
-      for (const [index, clip] of job.broll.entries()) {
+      for (const clip of job.broll) {
         try {
-          clip.sourceUrl = await findPixabayClip(s.pixabay_api_key.trim(), clip.query, pkg.id, index);
+          const requiredSeconds = Math.max(1, clip.end_sec - clip.start_sec);
+          const visual = await findPixabayVisual(
+            s.pixabay_api_key.trim(), clip.query, pkg.id, clip.scene_index, requiredSeconds, clip.visual_type,
+          );
+          if (visual) {
+            clip.sourceUrl = visual.url;
+            clip.visual_type = visual.mediaType;
+            clip.sourceDuration = visual.duration;
+          }
         } catch (error) {
-          // Stock footage is optional: keep the video renderable if one Pixabay search/download fails.
-          console.warn(`Pixabay scene ${index + 1} skipped:`, error);
+          // One missing stock result must not prevent the rest of the video from rendering.
+          console.warn(`Pixabay scene ${clip.scene_index + 1} skipped:`, error);
         }
       }
     }

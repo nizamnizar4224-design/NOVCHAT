@@ -4,7 +4,7 @@ import type { ScriptSegment } from "./timeline.ts";
 
 export type AssemblyProviderId = "none" | "creatomate" | "shotstack";
 export type CaptionCue = { start_sec: number; end_sec: number; text: string };
-export type BrollClip = { start_sec: number; end_sec: number; query: string; sourceUrl?: string | null };
+export type BrollClip = { scene_index: number; start_sec: number; end_sec: number; query: string; visual_type: "video" | "image"; sourceUrl?: string | null; sourceDuration?: number | null };
 export type AssemblyJob = {
   packageId: string; title: string; width: number; height: number;
   voiceUrl: string; segments: ScriptSegment[];
@@ -29,9 +29,9 @@ export function buildCaptionCues(segments: ScriptSegment[]): CaptionCue[] {
   return cues;
 }
 export function buildAssemblyJob(input: { packageId: string; title: string; voiceUrl: string; segments: ScriptSegment[] }): AssemblyJob {
-  return { packageId: input.packageId, title: input.title, width: 1280, height: 720,
+  return { packageId: input.packageId, title: input.title, width: 1920, height: 1080,
     voiceUrl: input.voiceUrl, segments: input.segments,
-    broll: input.segments.filter(s => s.broll.trim()).map(s => ({ start_sec: s.start_sec, end_sec: s.end_sec, query: s.broll, sourceUrl: null })),
+    broll: input.segments.map(s => ({ scene_index: s.index, start_sec: s.start_sec, end_sec: s.end_sec, query: s.broll.trim() || s.label, visual_type: s.visual_type ?? "video", sourceUrl: null, sourceDuration: null })),
     captions: buildCaptionCues(input.segments) };
 }
 
@@ -47,51 +47,45 @@ class CreatomateProvider implements AssemblyProvider {
       { type: "audio", track: 1, time: 0, duration: null, source: job.voiceUrl, audio_fade_out: 0.6 },
     ];
 
-    // Each script segment becomes its own designed scene. B-roll directions are shown as
-    // contextual visual cues; actual stock footage requires a footage provider/source URL.
+    // Each scene uses only its matching stock asset. Video clips are accepted only when
+    // their native duration covers the scene; still images receive a gentle zoom.
     for (const [index, segment] of job.segments.entries()) {
       const sceneDuration = Math.max(0.5, segment.end_sec - segment.start_sec);
-      const headline = (segment.on_screen_text || segment.label || segment.narration).trim().slice(0, 110);
-      const visualDirection = segment.broll.trim().slice(0, 180);
-      elements.push({
-        name: `Scene-${index + 1}`,
-        type: "composition",
-        track: 2,
-        time: segment.start_sec,
-        duration: sceneDuration,
-        width: job.width,
-        height: job.height,
-        fill_color: palette[index % palette.length],
-        elements: [
-          ...(job.broll.find((clip) => clip.start_sec === segment.start_sec && clip.sourceUrl)?.sourceUrl ? [{
-            type: "video", track: 1, time: 0, duration: sceneDuration,
-            source: job.broll.find((clip) => clip.start_sec === segment.start_sec)?.sourceUrl,
-            fit: "cover", volume: 0,
-          }] : []),
-          {
-            type: "text", track: 2, time: 0, duration: sceneDuration,
-            x: "8%", y: "13%", width: "84%", height: "12%",
-            text: `SCENE ${String(index + 1).padStart(2, "0")}`,
-            font_family: "Montserrat", font_weight: "700", font_size: "2.2 vmin",
-            fill_color: "#a5b4fc", x_alignment: "0%", y_alignment: "50%",
-          },
-          {
-            type: "text", track: 3, time: 0.2, duration: Math.max(0.3, sceneDuration - 0.2),
-            x: "8%", y: "31%", width: "84%", height: "35%",
-            text: headline,
-            font_family: "Montserrat", font_weight: "800", font_size: "5.2 vmin",
-            fill_color: "#ffffff", x_alignment: "0%", y_alignment: "50%",
-            animations: [{ time: 0, duration: 0.55, type: "text-slide", direction: "up", scope: "split-clip", split: "line" }],
-          },
-          ...(visualDirection ? [{
-            type: "text", track: 4, time: 0.35, duration: Math.max(0.3, sceneDuration - 0.35),
-            x: "8%", y: "76%", width: "84%", height: "12%",
-            text: `VISUAL: ${visualDirection}`,
-            font_family: "Montserrat", font_weight: "500", font_size: "2.1 vmin",
-            fill_color: "#cbd5e1", x_alignment: "0%", y_alignment: "50%",
-          }] : []),
-        ],
-      });
+      const asset = job.broll.find((clip) => clip.scene_index === segment.index && clip.sourceUrl);
+      const headline = (segment.on_screen_text || segment.label || "").trim().slice(0, 90);
+      const sceneElements: Record<string, unknown>[] = [];
+      if (asset?.sourceUrl) {
+        sceneElements.push({
+          type: asset.visual_type === "image" ? "image" : "video",
+          track: 1, time: 0, duration: sceneDuration, source: asset.sourceUrl,
+          fit: "cover", ...(asset.visual_type === "video" ? { volume: 0 } : {
+            animations: [{ time: 0, duration: sceneDuration, type: "scale", start_scale: 1, end_scale: 1.08 }],
+          }),
+        });
+      }
+      sceneElements.push({ type: "shape", track: 2, time: 0, duration: sceneDuration,
+        x: "0%", y: "0%", width: "100%", height: "100%", fill_color: "#000000", opacity: 28 });
+      if (headline) {
+        sceneElements.push({
+          type: "text", track: 3, time: 0.25, duration: Math.max(0.4, sceneDuration - 0.25),
+          x: "10%", y: "34%", width: "80%", height: "32%", text: headline,
+          font_family: "Montserrat", font_weight: "800", font_size: "6 vmin",
+          fill_color: "#ffffff", stroke_color: "#000000", stroke_width: "0.25 vmin",
+          x_alignment: "50%", y_alignment: "50%",
+          animations: [{ time: 0, duration: 0.45, type: "text-slide", direction: "up", scope: "split-clip", split: "line" }],
+        });
+      }
+      if (index === job.segments.length - 1) {
+        sceneElements.push({ type: "text", track: 4, time: Math.max(0, sceneDuration - 5),
+          duration: Math.min(5, sceneDuration), x: "15%", y: "72%", width: "70%", height: "14%",
+          text: "LIKE  👍     SUBSCRIBE  🔔", font_family: "Montserrat", font_weight: "800",
+          font_size: "4.2 vmin", fill_color: "#ffffff", x_alignment: "50%", y_alignment: "50%",
+          animations: [{ time: 0, duration: 0.5, type: "text-slide", direction: "up", scope: "split-clip" }],
+        });
+      }
+      elements.push({ name: `Scene-${index + 1}`, type: "composition", track: 2,
+        time: segment.start_sec, duration: sceneDuration, width: job.width, height: job.height,
+        fill_color: palette[index % palette.length], elements: sceneElements });
     }
 
     for (const [index, cue] of job.captions.entries()) {
@@ -99,9 +93,9 @@ class CreatomateProvider implements AssemblyProvider {
         name: `Caption-${index + 1}`,
         type: "text", track: 3, time: cue.start_sec,
         duration: Math.max(0.2, cue.end_sec - cue.start_sec),
-        x: "8%", y: "86%", width: "84%", height: "9%",
+        x: "10%", y: "78%", width: "80%", height: "12%",
         text: cue.text, font_family: "Montserrat", font_weight: "700",
-        font_size: "3 vmin", fill_color: "#ffffff",
+        font_size: "2.7 vmin", fill_color: "#ffffff",
         stroke_color: "#000000", stroke_width: "0.35 vmin",
         x_alignment: "50%", y_alignment: "50%",
       });

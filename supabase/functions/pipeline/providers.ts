@@ -67,6 +67,7 @@ function parseSegments(value: unknown): RawSegment[] {
       camera_angle: CAMERA_ANGLES.includes(angle) ? angle : "medium",
       broll: asText(row.broll).slice(0, 300),
       on_screen_text: onScreen === "" ? null : onScreen.slice(0, 80),
+      visual_type: asText(row.visual_type).toLowerCase() === "image" ? "image" : "video",
     };
   });
   return segments;
@@ -115,10 +116,14 @@ export async function writeScriptPackage(
     "Topics already covered recently (do not repeat):",
     recentTopics.length > 0 ? recentTopics.map((t) => `- ${t}`).join("\n") : "- none",
     "",
-    "Create one YouTube video of about 4 minutes (roughly 550 spoken words in total).",
-    "Structure the video as 10 to 14 segments of roughly 12 to 25 seconds each (30 to 60 words of narration each).",
-    "Retention rules: segment 1 is a hook that lands in the first 10 seconds (a bold claim, question or surprising fact, no greeting or channel intro);",
-    "change the visual at every segment boundary; plant an open loop early and pay it off later; finish with a short recap and one clear call to action.",
+    "Create one YouTube video of about 4 minutes (roughly 500 to 600 spoken words in total).",
+    "Structure the video as 10 to 14 segments of roughly 12 to 25 seconds each. Keep narration concise, natural and easy to understand; remove filler, repeated ideas and generic introductions.",
+    "OPENING HOOK: the first segment must start immediately with the exact topic and a compelling, specific question, surprising fact or useful promise. No greeting, channel intro, vague teaser or unrelated stock visual. The first 5-10 seconds must make the viewer want the answer.",
+    "VISUAL STORYTELLING: every segment must describe one concrete visual that directly illustrates its narration. Prefer specific real-world actions, objects, screens, documents, people and locations. Never use generic scenery, beaches, random nature, abstract finance imagery or unrelated footage. Avoid repeating the same visual idea in adjacent scenes.",
+    "For every segment, choose visual_type (video or image). Prefer video when a relevant action is available; use an image only when no suitable video is likely. Keep the visual useful for the full segment duration. The editor will reject stock video shorter than the scene rather than stretch or loop it.",
+    "ON-SCREEN TEXT: write a short, readable phrase of at most 5 words. It must summarize the key idea, not repeat the full narration. Use centered placement in the video editor.",
+    "ENDING: the final segment must deliver a brief recap and clearly say Like and Subscribe. Set on_screen_text to LIKE AND SUBSCRIBE or another concise CTA so matching icons can be displayed. Do not add a generic subscribe message earlier.",
+    "Retention rules: change the visual at every segment boundary; plant an open loop early and pay it off later; keep all footage tightly relevant to the exact topic.",
     "",
     "Return JSON with exactly these keys:",
     "topic (string),",
@@ -130,8 +135,9 @@ export async function writeScriptPackage(
     "  label (string, 2-4 word name of this beat),",
     "  narration (string, spoken words only: no stage directions, no timestamps, no speaker names),",
     `  camera_angle (one of: ${CAMERA_ANGLES.join(", ")}),`,
-    "  broll (string, a concise English stock-media search query of 3-8 concrete keywords describing the best real-world footage for this segment; avoid abstract ideas; empty string only if no visual is needed),",
-    "  on_screen_text (string, at most 6 words of overlay text for key moments, or empty string)).",
+    "  broll (string, a concrete stock visual to show during this segment, specific enough to search Pixabay; never empty because this channel uses stock footage and text, not an avatar),",
+    "  on_screen_text (string, at most 5 words of overlay text, or empty string),",
+    "  visual_type (string: video or image)).",
     "Do not include start or end times; they are calculated from the narration afterwards.",
   ].join("\n");
 
@@ -171,75 +177,6 @@ export async function synthesizeVoiceover(apiKey: string, voiceId: string, text:
   );
   await assertOk(res, "ElevenLabs voiceover");
   return new Uint8Array(await res.arrayBuffer());
-}
-
-
-export type StockMediaResult = {
-  bytes: Uint8Array;
-  mimeType: string;
-  extension: string;
-  source: "pixabay";
-  sourceUrl: string;
-  mediaType: "video" | "image";
-  contributor: string | null;
-  query: string;
-};
-
-/** Search Pixabay for a relevant video first, then a still image. Search result URLs
- * are downloaded to our own Storage; Pixabay does not permit permanent image hotlinking. */
-export async function findPixabayMedia(apiKey: string, query: string): Promise<StockMediaResult | null> {
-  const cleanQuery = query.trim().slice(0, 100);
-  if (!cleanQuery) return null;
-
-  const videoUrl = new URL("https://pixabay.com/api/videos/");
-  videoUrl.searchParams.set("key", apiKey);
-  videoUrl.searchParams.set("q", cleanQuery);
-  videoUrl.searchParams.set("per_page", "5");
-  videoUrl.searchParams.set("safesearch", "true");
-  try {
-    const response = await fetchWithRetry(videoUrl.toString(), {}, { retries: 1, timeoutMs: 20_000 });
-    if (response.ok) {
-      const payload = await response.json();
-      const hit = (payload?.hits ?? []).find((item: any) => item?.videos?.medium?.url || item?.videos?.small?.url);
-      const rendition = hit?.videos?.medium?.url ? hit.videos.medium : hit?.videos?.small;
-      if (hit && rendition?.url) {
-        const bytes = await downloadRemoteFile(rendition.url);
-        if (bytes.byteLength > 1024) return {
-          bytes, mimeType: "video/mp4", extension: "mp4", source: "pixabay",
-          sourceUrl: String(hit.pageURL ?? ""), mediaType: "video",
-          contributor: typeof hit.user === "string" ? hit.user : null, query: cleanQuery,
-        };
-      }
-    } else if (response.status !== 429) {
-      console.warn("Pixabay video search unavailable:", response.status, (await response.text()).slice(0, 200));
-    }
-  } catch (error) {
-    console.warn("Pixabay video search failed; trying image:", error instanceof Error ? error.message : String(error));
-  }
-
-  const imageUrl = new URL("https://pixabay.com/api/");
-  imageUrl.searchParams.set("key", apiKey);
-  imageUrl.searchParams.set("q", cleanQuery);
-  imageUrl.searchParams.set("image_type", "photo");
-  imageUrl.searchParams.set("orientation", "horizontal");
-  imageUrl.searchParams.set("safesearch", "true");
-  imageUrl.searchParams.set("per_page", "5");
-  const response = await fetchWithRetry(imageUrl.toString(), {}, { retries: 1, timeoutMs: 20_000 });
-  if (!response.ok) {
-    if (response.status === 429) throw new Error("Pixabay rate limit reached; retry on the next scheduled run");
-    throw new Error(`Pixabay image search failed (${response.status}): ${(await response.text()).slice(0, 250)}`);
-  }
-  const payload = await response.json();
-  const hit = (payload?.hits ?? []).find((item: any) => item?.largeImageURL || item?.webformatURL);
-  const source = hit?.largeImageURL ?? hit?.webformatURL;
-  if (!hit || !source) return null;
-  const bytes = await downloadRemoteFile(source);
-  if (bytes.byteLength <= 1024) return null;
-  return {
-    bytes, mimeType: "image/jpeg", extension: "jpg", source: "pixabay",
-    sourceUrl: String(hit.pageURL ?? ""), mediaType: "image",
-    contributor: typeof hit.user === "string" ? hit.user : null, query: cleanQuery,
-  };
 }
 
 export type ThumbnailImage = { bytes: Uint8Array; mimeType: string; extension: string };
