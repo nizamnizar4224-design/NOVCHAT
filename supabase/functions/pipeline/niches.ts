@@ -1,4 +1,4 @@
-export type Niche = "finance" | "education" | "entertainment" | "general";
+ export type Niche = "finance" | "education" | "entertainment" | "general";
 
 export const NICHE_GUIDANCE: Record<Niche, string> = {
   finance:
