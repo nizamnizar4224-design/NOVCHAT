@@ -19,7 +19,6 @@ import {
   downloadRemoteFile,
   fetchTrendingTopics,
   generateThumbnailImage,
-  findPixabayMedia,
   synthesizeVoiceover,
   writeScriptPackage,
 } from "./providers.ts";
@@ -62,82 +61,6 @@ async function recentTopics(channelId: string): Promise<string[]> {
   return (data ?? []).map((row) => row.topic as string);
 }
 
-
-async function prepareSceneAssets(packageId: string, segments: NonNullable<VideoPackage["script_segments"]>): Promise<NonNullable<VideoPackage["scene_assets"]>> {
-  const apiKey = Deno.env.get("PIXABAY_API_KEY")?.trim();
-  if (!apiKey) {
-    console.warn("PIXABAY_API_KEY is not configured; Creatomate will use its designed fallback scenes.");
-    return [];
-  }
-
-  const assets: NonNullable<VideoPackage["scene_assets"]> = [];
-  const selected = segments.filter((segment) => segment.broll.trim()).slice(0, 14);
-  for (const [index, segment] of selected.entries()) {
-    const query = segment.broll.trim().slice(0, 100);
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(query.toLowerCase()));
-    const queryKey = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    let cached: any = null;
-
-    const { data: cacheRow, error: cacheReadError } = await db
-      .from("stock_media_cache")
-      .select("storage_path,media_type,source_url,contributor")
-      .eq("query_key", queryKey)
-      .gt("expires_at", new Date().toISOString())
-      .maybeSingle();
-    if (cacheReadError) throw new Error(`Could not read stock media cache: ${cacheReadError.message}`);
-    cached = cacheRow;
-
-    let assetInfo = cached;
-    if (!assetInfo) {
-      await setActivity(`[${channelSafeName(packageId)}] Searching stock visual ${index + 1}/${selected.length}`);
-      try {
-        const result = await findPixabayMedia(apiKey, query);
-        if (!result) {
-          console.warn(`No Pixabay stock result for scene ${index + 1}: ${query}`);
-          continue;
-        }
-        const storagePath = `_stock-cache/${queryKey}.${result.extension}`;
-        await uploadFile(storagePath, result.bytes, result.mimeType);
-        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-        const { error: cacheWriteError } = await db.from("stock_media_cache").upsert({
-          query_key: queryKey,
-          query,
-          storage_path: storagePath,
-          media_type: result.mediaType,
-          source_url: result.sourceUrl,
-          contributor: result.contributor,
-          expires_at: expiresAt,
-        }, { onConflict: "query_key" });
-        if (cacheWriteError) throw new Error(`Could not cache stock media result: ${cacheWriteError.message}`);
-        assetInfo = {
-          storage_path: storagePath, media_type: result.mediaType,
-          source_url: result.sourceUrl, contributor: result.contributor,
-        };
-      } catch (error) {
-        // Stock search is an enhancement, not a reason to lose the generated script/video.
-        console.warn(`Stock visual skipped for scene ${index + 1}:`, error instanceof Error ? error.message : String(error));
-        continue;
-      }
-    }
-
-    assets.push({
-      start_sec: segment.start_sec,
-      end_sec: segment.end_sec,
-      storage_path: assetInfo.storage_path,
-      media_type: assetInfo.media_type,
-      source: "pixabay",
-      source_url: assetInfo.source_url,
-      contributor: assetInfo.contributor ?? null,
-      query,
-    });
-  }
-  return assets;
-}
-
-function channelSafeName(packageId: string): string {
-  return `Video ${packageId.slice(0, 8)}`;
-}
-
 async function writeScriptStep(pkg: VideoPackage, s: Settings, channel: Channel): Promise<PackageStatus> {
   await setActivity(`[${channel.name}] Analyzing trends`);
   const trends = await fetchTrendingTopics(channel.target_region ?? "US");
@@ -150,9 +73,7 @@ async function writeScriptStep(pkg: VideoPackage, s: Settings, channel: Channel)
     trends,
     past,
   );
-  await setActivity(`[${channel.name}] Finding stock visuals for each scene`);
-  const sceneAssets = await prepareSceneAssets(pkg.id, written.script_segments);
-  await updatePackage(pkg.id, { ...written, scene_assets: sceneAssets, status: "voicing" });
+  await updatePackage(pkg.id, { ...written, status: "voicing" });
   return "voicing";
 }
 
@@ -194,6 +115,26 @@ async function thumbnailStep(pkg: VideoPackage, s: Settings, channel: Channel): 
   return "ready";
 }
 
+/** Search Pixabay for a scene-matching stock clip, cache the file in private Supabase Storage, and return a short-lived URL. */
+async function findPixabayClip(apiKey: string, query: string, packageId: string, sceneIndex: number): Promise<string | null> {
+  const endpoint = new URL("https://pixabay.com/api/videos/");
+  endpoint.searchParams.set("key", apiKey);
+  endpoint.searchParams.set("q", query.slice(0, 100));
+  endpoint.searchParams.set("per_page", "3");
+  endpoint.searchParams.set("safesearch", "true");
+  const response = await fetch(endpoint.toString());
+  if (!response.ok) throw new Error(`Pixabay search failed (${response.status})`);
+  const payload = await response.json();
+  const hits = Array.isArray(payload.hits) ? payload.hits : [];
+  const hit = hits.find((item: any) => item?.videos?.medium?.url || item?.videos?.small?.url);
+  const remoteUrl = hit?.videos?.medium?.url ?? hit?.videos?.small?.url;
+  if (typeof remoteUrl !== "string") return null;
+  const bytes = await downloadRemoteFile(remoteUrl);
+  const path = `${packageId}/stock-scene-${sceneIndex + 1}.mp4`;
+  await uploadFile(path, bytes, "video/mp4");
+  return await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS);
+}
+
 /** Creatomate assembly step: submit once, poll on later scheduler ticks, then persist final MP4. */
 async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel): Promise<PackageStatus> {
   const provider = getAssemblyProvider(s.assembly_provider, s.assembly_api_key, s.assembly_template_id);
@@ -208,13 +149,17 @@ async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel):
       title: pkg.title ?? "",
       voiceUrl: await createSignedFileUrl(pkg.voice_path, SIGNED_LINK_TTL_SECONDS),
       segments: pkg.script_segments,
-      assets: await Promise.all((pkg.scene_assets ?? []).map(async (asset) => ({
-        start_sec: asset.start_sec,
-        end_sec: asset.end_sec,
-        media_type: asset.media_type,
-        url: await createSignedFileUrl(asset.storage_path, SIGNED_LINK_TTL_SECONDS),
-      }))),
     });
+    if (s.pixabay_api_key?.trim()) {
+      for (const [index, clip] of job.broll.entries()) {
+        try {
+          clip.sourceUrl = await findPixabayClip(s.pixabay_api_key.trim(), clip.query, pkg.id, index);
+        } catch (error) {
+          // Stock footage is optional: keep the video renderable if one Pixabay search/download fails.
+          console.warn(`Pixabay scene ${index + 1} skipped:`, error);
+        }
+      }
+    }
     const renderId = await provider.submit(job);
     await updatePackage(pkg.id, { assembly_render_id: renderId });
     return "assembling";

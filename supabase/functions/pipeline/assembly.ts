@@ -4,12 +4,11 @@ import type { ScriptSegment } from "./timeline.ts";
 
 export type AssemblyProviderId = "none" | "creatomate" | "shotstack";
 export type CaptionCue = { start_sec: number; end_sec: number; text: string };
-export type BrollClip = { start_sec: number; end_sec: number; query: string };
-export type SceneAsset = { start_sec: number; end_sec: number; url: string; media_type: "video" | "image" };
+export type BrollClip = { start_sec: number; end_sec: number; query: string; sourceUrl?: string | null };
 export type AssemblyJob = {
   packageId: string; title: string; width: number; height: number;
   voiceUrl: string; segments: ScriptSegment[];
-  broll: BrollClip[]; captions: CaptionCue[]; assets: SceneAsset[];
+  broll: BrollClip[]; captions: CaptionCue[];
 };
 export type AssemblyStatus = { status: "pending" | "processing" | "completed" | "failed"; videoUrl: string | null; error: string | null };
 export interface AssemblyProvider { readonly id: AssemblyProviderId; submit(job: AssemblyJob): Promise<string>; poll(renderId: string): Promise<AssemblyStatus>; }
@@ -29,11 +28,11 @@ export function buildCaptionCues(segments: ScriptSegment[]): CaptionCue[] {
   }
   return cues;
 }
-export function buildAssemblyJob(input: { packageId: string; title: string; voiceUrl: string; segments: ScriptSegment[]; assets?: SceneAsset[] }): AssemblyJob {
-  return { packageId: input.packageId, title: input.title, width: 1920, height: 1080,
+export function buildAssemblyJob(input: { packageId: string; title: string; voiceUrl: string; segments: ScriptSegment[] }): AssemblyJob {
+  return { packageId: input.packageId, title: input.title, width: 1280, height: 720,
     voiceUrl: input.voiceUrl, segments: input.segments,
-    broll: input.segments.filter(s => s.broll.trim()).map(s => ({ start_sec: s.start_sec, end_sec: s.end_sec, query: s.broll })),
-    captions: buildCaptionCues(input.segments), assets: input.assets ?? [] };
+    broll: input.segments.filter(s => s.broll.trim()).map(s => ({ start_sec: s.start_sec, end_sec: s.end_sec, query: s.broll, sourceUrl: null })),
+    captions: buildCaptionCues(input.segments) };
 }
 
 class CreatomateProvider implements AssemblyProvider {
@@ -64,25 +63,20 @@ class CreatomateProvider implements AssemblyProvider {
         height: job.height,
         fill_color: palette[index % palette.length],
         elements: [
-          ...(job.assets.filter((asset) => asset.start_sec === segment.start_sec).map((asset) => ({
-            type: asset.media_type === "video" ? "video" : "image",
-            track: 0,
-            time: 0,
-            duration: sceneDuration,
-            source: asset.url,
-            x: "0%", y: "0%", width: "100%", height: "100%",
-            fit: "cover",
-            ...(asset.media_type === "video" ? { volume: 0, loop: true } : {}),
-          }))),
+          ...(job.broll.find((clip) => clip.start_sec === segment.start_sec && clip.sourceUrl)?.sourceUrl ? [{
+            type: "video", track: 1, time: 0, duration: sceneDuration,
+            source: job.broll.find((clip) => clip.start_sec === segment.start_sec)?.sourceUrl,
+            fit: "cover", volume: 0,
+          }] : []),
           {
-            type: "text", track: 1, time: 0, duration: sceneDuration,
+            type: "text", track: 2, time: 0, duration: sceneDuration,
             x: "8%", y: "13%", width: "84%", height: "12%",
             text: `SCENE ${String(index + 1).padStart(2, "0")}`,
             font_family: "Montserrat", font_weight: "700", font_size: "2.2 vmin",
             fill_color: "#a5b4fc", x_alignment: "0%", y_alignment: "50%",
           },
           {
-            type: "text", track: 2, time: 0.2, duration: Math.max(0.3, sceneDuration - 0.2),
+            type: "text", track: 3, time: 0.2, duration: Math.max(0.3, sceneDuration - 0.2),
             x: "8%", y: "31%", width: "84%", height: "35%",
             text: headline,
             font_family: "Montserrat", font_weight: "800", font_size: "5.2 vmin",
@@ -90,7 +84,7 @@ class CreatomateProvider implements AssemblyProvider {
             animations: [{ time: 0, duration: 0.55, type: "text-slide", direction: "up", scope: "split-clip", split: "line" }],
           },
           ...(visualDirection ? [{
-            type: "text", track: 3, time: 0.35, duration: Math.max(0.3, sceneDuration - 0.35),
+            type: "text", track: 4, time: 0.35, duration: Math.max(0.3, sceneDuration - 0.35),
             x: "8%", y: "76%", width: "84%", height: "12%",
             text: `VISUAL: ${visualDirection}`,
             font_family: "Montserrat", font_weight: "500", font_size: "2.1 vmin",

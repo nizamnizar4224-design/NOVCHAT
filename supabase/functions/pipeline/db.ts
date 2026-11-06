@@ -39,7 +39,6 @@ export type VideoPackage = {
   video_path: string | null;
   final_video_path: string | null;
   script_segments: ScriptSegment[] | null;
-  scene_assets: { start_sec: number; end_sec: number; storage_path: string; media_type: "video" | "image"; source: string; source_url: string; contributor: string | null; query: string }[] | null;
   attempts: number;
   next_attempt_at: string | null;
   failed_from: PackageStatus | null;
@@ -59,6 +58,7 @@ export type Settings = {
   openai_image_model: string | null;
   assembly_provider: string;
   assembly_api_key: string | null;
+  pixabay_api_key: string | null;
 };
 
 /** Per-channel configuration. */
@@ -89,6 +89,7 @@ export type Channel = {
 
 const LABELS: Record<string, string> = {
   openai_api_key: "OpenAI API key",
+  pixabay_api_key: "Pixabay API key",
   heygen_api_key: "HeyGen API key",
   elevenlabs_api_key: "ElevenLabs API key",
   youtube_client_id: "YouTube Client ID",
