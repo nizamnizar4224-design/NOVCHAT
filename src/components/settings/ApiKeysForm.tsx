@@ -22,6 +22,7 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
   const [secrets, setSecrets] = useState(EMPTY_SECRETS);
   const [textModel, setTextModel] = useState(settings.openai_text_model ?? "");
   const [imageModel, setImageModel] = useState(settings.openai_image_model ?? "");
+  const [templateId, setTemplateId] = useState(settings.assembly_template_id ?? "");
   const [provider, setProvider] = useState<AssemblyProviderId>(settings.assembly_provider);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ tone: "success" | "error"; text: string } | null>(null);
@@ -36,6 +37,7 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
       openai_text_model: textModel.trim() || null,
       openai_image_model: imageModel.trim() || null,
       assembly_provider: provider,
+      assembly_template_id: templateId.trim() || null,
     };
     for (const key of Object.keys(secrets) as SecretKey[]) {
       const value = secrets[key].trim();
@@ -78,7 +80,7 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
           saved={settings.openai_api_key}
           value={secrets.openai_api_key}
           onChange={setSecret("openai_api_key")}
-          hint="Used for script generation, metadata and thumbnail images. Get a key at platform.openai.com/api-keys."
+          hint="Used for topic research, scripts, metadata and thumbnail images. Get a key at platform.openai.com/api-keys."
         />
         <SecretField
           id="elevenlabs_api_key"
@@ -87,14 +89,6 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
           value={secrets.elevenlabs_api_key}
           onChange={setSecret("elevenlabs_api_key")}
           hint="Generates the voiceover narration."
-        />
-        <SecretField
-          id="heygen_api_key"
-          label="HeyGen API key"
-          saved={settings.heygen_api_key}
-          value={secrets.heygen_api_key}
-          onChange={setSecret("heygen_api_key")}
-          hint="Optional. Renders the on-camera avatar video (a channel also needs an avatar ID). Without it, the pipeline stops at voiceover and thumbnail."
         />
       </Card>
 
@@ -133,11 +127,9 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
 
       <Card className="space-y-6 p-6 sm:p-8">
         <div>
-          <h2 className="text-base font-semibold text-zinc-50">Video editing (coming soon)</h2>
+          <h2 className="text-base font-semibold text-zinc-50">Video editing</h2>
           <p className="mt-1 text-sm text-zinc-400">
-            The pipeline already stores a timestamped script with B-roll and caption data and has a slot for an editing
-            step. Creatomate and Shotstack adapters are not connected yet, so videos are currently published exactly as
-            rendered.
+HeyGen is disabled. The pipeline sends the ElevenLabs voiceover and script information directly to Creatomate, then creates the thumbnail after the video is ready.
           </p>
         </div>
         <div>
@@ -148,18 +140,25 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
             onChange={(event) => setProvider(event.target.value as AssemblyProviderId)}
             className={inputClass}
           >
-            <option value="none">None (publish the avatar video as-is)</option>
-            <option value="creatomate">Creatomate (not available yet)</option>
-            <option value="shotstack">Shotstack (not available yet)</option>
+            <option value="none">None</option>
+            <option value="creatomate">Creatomate (integrated)</option>
+            <option value="shotstack">Shotstack (not implemented)</option>
           </select>
         </div>
+        {provider === "creatomate" && (
+          <div>
+            <FieldLabel htmlFor="assembly_template_id">Creatomate Template ID</FieldLabel>
+            <input id="assembly_template_id" value={templateId} onChange={(event) => setTemplateId(event.target.value)} className={`${inputClass} font-mono`} placeholder="Paste your Creatomate template ID" spellCheck={false} />
+            <p className="mt-1.5 text-xs text-zinc-500">Your Creatomate template should contain dynamic elements named Video-Title, Narration-Audio, Caption-Text and Scene-Plan. Add your own visual/background layers to the template.</p>
+          </div>
+        )}
         <SecretField
           id="assembly_api_key"
           label="Editing provider API key"
           saved={settings.assembly_api_key}
           value={secrets.assembly_api_key}
           onChange={setSecret("assembly_api_key")}
-          hint="Stored for when an adapter is added. Not used yet."
+          hint="Creatomate API key. Used by the server to submit renders and poll render status."
         />
       </Card>
 
