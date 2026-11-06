@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, ExternalLink, Film, Loader2, RotateCcw, Volume2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink, Film, Loader2, Play, RotateCcw, Volume2, X } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Card, inputClass } from "@/components/ui/primitives";
 import { createSignedFileUrl, retryVideo } from "@/lib/pipeline";
@@ -271,6 +271,18 @@ function VideoDetailPanel({
           </section>
         )}
 
+        {(pkg.final_video_path || pkg.video_path) ? (
+          <section className="mt-6">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">Generated video preview</h3>
+            <VideoPreview paths={[pkg.final_video_path, pkg.video_path].filter((path): path is string => Boolean(path))} />
+          </section>
+        ) : (
+          <section className="mt-6 rounded-lg border border-amber-500/25 bg-amber-500/5 p-4">
+            <h3 className="text-sm font-medium text-amber-200">Video preview not available yet</h3>
+            <p className="mt-1 text-sm text-zinc-400">The video file has not been saved to Storage for this package. Thumbnail failure does not provide a playable video URL by itself.</p>
+          </section>
+        )}
+
         {pkg.voice_path && (
           <section className="mt-6">
             <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">Voiceover</h3>
@@ -355,6 +367,60 @@ function VideoDetailPanel({
           </section>
         )}
       </aside>
+    </div>
+  );
+}
+
+function VideoPreview({ paths }: { paths: string[] }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      for (const path of paths) {
+        try {
+          const playableUrl = /^https?:\/\//i.test(path) ? path : await createSignedFileUrl(path, 4 * 60 * 60);
+          if (!cancelled) setUrl(playableUrl);
+          if (!cancelled) setLoading(false);
+          return;
+        } catch {
+          // Try the other saved path (final_video_path / video_path) before showing an error.
+        }
+      }
+      if (!cancelled) {
+        setError("Could not open the generated video. Check that the file exists in the video-assets Storage bucket and that this account can read it.");
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paths.join("|")]);
+
+  if (loading) {
+    return (
+      <div className="mt-3 flex h-40 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900">
+        <Loader2 className="h-5 w-5 animate-spin text-zinc-400" aria-hidden="true" />
+        <span className="ml-2 text-sm text-zinc-400">Preparing video preview...</span>
+      </div>
+    );
+  }
+  if (error || !url) {
+    return <p className="mt-3 text-sm text-rose-300">{error ?? "Could not load the generated video."}</p>;
+  }
+
+  return (
+    <div className="mt-3 space-y-2">
+      <video controls playsInline preload="metadata" src={url} className="w-full rounded-lg border border-zinc-800 bg-black" />
+      <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm text-sky-300 transition hover:text-sky-200">
+        <Play className="h-3.5 w-3.5" aria-hidden="true" />
+        Open video in a new tab
+        <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+      </a>
     </div>
   );
 }
