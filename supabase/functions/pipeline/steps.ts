@@ -115,17 +115,54 @@ async function thumbnailStep(pkg: VideoPackage, s: Settings, channel: Channel): 
   return "ready";
 }
 
-/** Reject obviously unrelated results when Pixabay returns descriptive tags. */
-function pixabayTagMatch(query: string, tags: unknown): boolean {
-  if (typeof tags !== "string" || !tags.trim()) return true;
-  const stop = new Set(["the", "and", "with", "for", "from", "into", "about", "show", "showing", "indian", "close", "up"]);
-  const words = query.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2 && !stop.has(word));
-  const tagWords = new Set(tags.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2));
-  return words.some((word) => tagWords.has(word) || [...tagWords].some((tag) => tag.includes(word) || word.includes(tag)));
+/** Tokenize a concise search phrase and Pixabay tags for strict subject matching. */
+function searchTokens(value: string): string[] {
+  const stop = new Set([
+    "the", "and", "with", "for", "from", "into", "about", "show", "showing", "indian",
+    "close", "shot", "view", "video", "photo", "footage", "person", "people", "using", "looking",
+    "hands", "hand", "camera", "professional", "concept", "background", "stock", "image",
+    "checking", "reading", "beside", "near", "over",
+  ]);
+  const words = value.toLowerCase().split(/[^a-z0-9]+/)
+    .filter((word) => word.length > 2 && !stop.has(word));
+  const synonyms: Record<string, string[]> = {
+    "mutual": ["investment", "finance"], "fund": ["investment", "finance"],
+    "factsheet": ["document", "finance"], "ter": ["finance", "investment"],
+    "nav": ["finance", "investment"], "smartphone": ["phone", "mobile"],
+    "mobile": ["phone", "smartphone"], "laptop": ["computer"],
+    "rupee": ["money", "currency"], "calculator": ["finance", "calculation"],
+    "investor": ["investment", "finance"], "banking": ["bank", "finance"],
+    "stock": ["market", "finance"], "shares": ["market", "investment"],
+  };
+  return [...new Set([...words, ...words.flatMap((word) => synonyms[word] ?? [])])];
 }
 
-/** Search Pixabay for a relevant scene asset. A video is used only if it can cover the
- * complete scene at native speed; otherwise a relevant still image is used instead. */
+/** Require multiple meaningful matches; one generic tag is not enough to accept a result. */
+function pixabayRelevanceScore(query: string, tags: unknown): number {
+  if (typeof tags !== "string" || !tags.trim()) return 0;
+  const wanted = searchTokens(query);
+  const available = searchTokens(tags);
+  if (!wanted.length || !available.length) return 0;
+  const matched = wanted.filter((word) => available.some((tag) =>
+    tag === word || (Math.min(tag.length, word.length) >= 5 && (tag.includes(word) || word.includes(tag)))
+  ));
+  const ratio = matched.length / wanted.length;
+  // A single broad match (e.g. "money") must not pull in unrelated footage.
+  if (matched.length < 2) return 0;
+  return ratio + Math.min(matched.length, 4) * 0.08;
+}
+
+export type SelectedPixabayVisual = {
+  url: string;
+  storagePath: string;
+  mediaType: "video" | "image";
+  duration: number | null;
+  sourceUrl: string;
+  sourceId: number;
+  tags: string;
+};
+
+/** Search Pixabay, rank by subject relevance, and reject weak matches instead of inserting random stock. */
 async function findPixabayVisual(
   apiKey: string,
   query: string,
@@ -133,50 +170,69 @@ async function findPixabayVisual(
   sceneIndex: number,
   requiredSeconds: number,
   preferredType: "video" | "image",
-): Promise<{ url: string; mediaType: "video" | "image"; duration: number | null } | null> {
+  usedAssetIds: Set<number>,
+): Promise<SelectedPixabayVisual | null> {
+  const cleanQuery = searchTokens(query).slice(0, 6).join(" ");
+  if (!cleanQuery) return null;
+
   if (preferredType === "video") {
     const videoEndpoint = new URL("https://pixabay.com/api/videos/");
     videoEndpoint.searchParams.set("key", apiKey);
-    videoEndpoint.searchParams.set("q", query.slice(0, 100));
-    videoEndpoint.searchParams.set("per_page", "10");
+    videoEndpoint.searchParams.set("q", cleanQuery);
+    videoEndpoint.searchParams.set("per_page", "20");
+    videoEndpoint.searchParams.set("order", "popular");
     videoEndpoint.searchParams.set("safesearch", "true");
     const videoResponse = await fetch(videoEndpoint.toString());
     if (!videoResponse.ok) throw new Error(`Pixabay video search failed (${videoResponse.status})`);
     const videoPayload = await videoResponse.json();
     const hits = Array.isArray(videoPayload.hits) ? videoPayload.hits : [];
-    const suitable = hits.find((hit: any) =>
-      Number(hit?.duration) >= requiredSeconds &&
-      (hit?.videos?.medium?.url || hit?.videos?.small?.url) && pixabayTagMatch(query, hit?.tags)
-    );
+    const suitable = hits
+      .filter((hit: any) => Number(hit?.duration) >= requiredSeconds &&
+        (hit?.videos?.medium?.url || hit?.videos?.small?.url) &&
+        !usedAssetIds.has(Number(hit?.id)) && pixabayRelevanceScore(cleanQuery, hit?.tags) >= 0.55)
+      .sort((a: any, b: any) => pixabayRelevanceScore(cleanQuery, b?.tags) - pixabayRelevanceScore(cleanQuery, a?.tags))[0];
+
     if (suitable) {
       const remoteUrl = suitable.videos.medium?.url ?? suitable.videos.small?.url;
       const bytes = await downloadRemoteFile(remoteUrl);
       const path = `${packageId}/stock-scene-${sceneIndex + 1}.mp4`;
       await uploadFile(path, bytes, "video/mp4");
-      return { url: await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS), mediaType: "video", duration: Number(suitable.duration) };
+      usedAssetIds.add(Number(suitable.id));
+      return {
+        url: await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS), storagePath: path,
+        mediaType: "video", duration: Number(suitable.duration), sourceUrl: remoteUrl,
+        sourceId: Number(suitable.id), tags: String(suitable.tags ?? ""),
+      };
     }
   }
 
-  // If no clip can cover the scene, do not stretch/loop a short clip. Use a relevant
-  // still image with a subtle pan/zoom for the full scene duration instead.
+  // A relevant still image is safer than a short/unrelated video stretched across the scene.
   const imageEndpoint = new URL("https://pixabay.com/api/");
   imageEndpoint.searchParams.set("key", apiKey);
-  imageEndpoint.searchParams.set("q", query.slice(0, 100));
+  imageEndpoint.searchParams.set("q", cleanQuery);
   imageEndpoint.searchParams.set("image_type", "photo");
   imageEndpoint.searchParams.set("orientation", "horizontal");
   imageEndpoint.searchParams.set("safesearch", "true");
-  imageEndpoint.searchParams.set("per_page", "5");
+  imageEndpoint.searchParams.set("per_page", "20");
+  imageEndpoint.searchParams.set("order", "popular");
   const imageResponse = await fetch(imageEndpoint.toString());
   if (!imageResponse.ok) throw new Error(`Pixabay image search failed (${imageResponse.status})`);
   const imagePayload = await imageResponse.json();
   const imageHits = Array.isArray(imagePayload.hits) ? imagePayload.hits : [];
-  const imageHit = imageHits.find((hit: any) => pixabayTagMatch(query, hit?.tags)) ?? null;
+  const imageHit = imageHits
+    .filter((hit: any) => !usedAssetIds.has(Number(hit?.id)) && pixabayRelevanceScore(cleanQuery, hit?.tags) >= 0.55)
+    .sort((a: any, b: any) => pixabayRelevanceScore(cleanQuery, b?.tags) - pixabayRelevanceScore(cleanQuery, a?.tags))[0];
   const imageUrl = imageHit?.largeImageURL ?? imageHit?.webformatURL;
   if (typeof imageUrl !== "string") return null;
   const bytes = await downloadRemoteFile(imageUrl);
   const path = `${packageId}/stock-scene-${sceneIndex + 1}.jpg`;
   await uploadFile(path, bytes, "image/jpeg");
-  return { url: await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS), mediaType: "image", duration: null };
+  usedAssetIds.add(Number(imageHit.id));
+  return {
+    url: await createSignedFileUrl(path, SIGNED_LINK_TTL_SECONDS), storagePath: path,
+    mediaType: "image", duration: null, sourceUrl: imageUrl,
+    sourceId: Number(imageHit.id), tags: String(imageHit.tags ?? ""),
+  };
 }
 
 /** Creatomate assembly step: submit once, poll on later scheduler ticks, then persist final MP4. */
@@ -194,24 +250,37 @@ async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel):
       voiceUrl: await createSignedFileUrl(pkg.voice_path, SIGNED_LINK_TTL_SECONDS),
       segments: pkg.script_segments,
     });
+    const selectedAssets: Array<Record<string, unknown>> = [];
+    const usedAssetIds = new Set<number>();
     if (s.pixabay_api_key?.trim()) {
       for (const clip of job.broll) {
         try {
           const requiredSeconds = Math.max(1, clip.end_sec - clip.start_sec);
           const visual = await findPixabayVisual(
-            s.pixabay_api_key.trim(), clip.query, pkg.id, clip.scene_index, requiredSeconds, clip.visual_type,
+            s.pixabay_api_key.trim(), clip.query, pkg.id, clip.scene_index, requiredSeconds,
+            clip.visual_type, usedAssetIds,
           );
           if (visual) {
             clip.sourceUrl = visual.url;
             clip.visual_type = visual.mediaType;
             clip.sourceDuration = visual.duration;
+            selectedAssets.push({
+              scene_index: clip.scene_index, query: clip.query, media_type: visual.mediaType,
+              storage_path: visual.storagePath, source: "pixabay", source_id: visual.sourceId,
+              source_url: visual.sourceUrl, tags: visual.tags, duration: visual.duration,
+              scene_start_sec: clip.start_sec, scene_end_sec: clip.end_sec,
+            });
+          } else {
+            selectedAssets.push({ scene_index: clip.scene_index, query: clip.query, status: "no_relevant_asset" });
           }
         } catch (error) {
           // One missing stock result must not prevent the rest of the video from rendering.
           console.warn(`Pixabay scene ${clip.scene_index + 1} skipped:`, error);
+          selectedAssets.push({ scene_index: clip.scene_index, query: clip.query, status: "search_failed" });
         }
       }
     }
+    await updatePackage(pkg.id, { scene_assets: selectedAssets } as Partial<VideoPackage>);
     const renderId = await provider.submit(job);
     await updatePackage(pkg.id, { assembly_render_id: renderId });
     return "assembling";

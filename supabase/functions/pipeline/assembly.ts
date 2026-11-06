@@ -68,8 +68,10 @@ class CreatomateProvider implements AssemblyProvider {
       if (headline) {
         sceneElements.push({
           type: "text", track: 3, time: 0.25, duration: Math.max(0.4, sceneDuration - 0.25),
-          x: "10%", y: "34%", width: "80%", height: "32%", text: headline,
-          font_family: "Montserrat", font_weight: "800", font_size: "6 vmin",
+          x: "50%", y: "50%", x_anchor: "50%", y_anchor: "50%",
+          width: "80%", height: "38%", text: headline,
+          font_family: "Montserrat", font_weight: "800", font_size: "5.5 vmin",
+          font_size_minimum: "3.2 vmin", font_size_maximum: "5.5 vmin",
           fill_color: "#ffffff", stroke_color: "#000000", stroke_width: "0.25 vmin",
           x_alignment: "50%", y_alignment: "50%",
           animations: [{ time: 0, duration: 0.45, type: "text-slide", direction: "up", scope: "split-clip", split: "line" }],
@@ -77,8 +79,9 @@ class CreatomateProvider implements AssemblyProvider {
       }
       if (index === job.segments.length - 1) {
         sceneElements.push({ type: "text", track: 4, time: Math.max(0, sceneDuration - 5),
-          duration: Math.min(5, sceneDuration), x: "15%", y: "72%", width: "70%", height: "14%",
-          text: "LIKE  👍     SUBSCRIBE  🔔", font_family: "Montserrat", font_weight: "800",
+          duration: Math.min(5, sceneDuration), x: "50%", y: "72%",
+          x_anchor: "50%", y_anchor: "50%", width: "80%", height: "16%",
+          text: "👍  LIKE     SUBSCRIBE  🔔", font_family: "Montserrat", font_weight: "800",
           font_size: "4.2 vmin", fill_color: "#ffffff", x_alignment: "50%", y_alignment: "50%",
           animations: [{ time: 0, duration: 0.5, type: "text-slide", direction: "up", scope: "split-clip" }],
         });
@@ -93,7 +96,8 @@ class CreatomateProvider implements AssemblyProvider {
         name: `Caption-${index + 1}`,
         type: "text", track: 3, time: cue.start_sec,
         duration: Math.max(0.2, cue.end_sec - cue.start_sec),
-        x: "10%", y: "78%", width: "80%", height: "12%",
+        x: "50%", y: "87%", x_anchor: "50%", y_anchor: "50%",
+        width: "80%", height: "10%",
         text: cue.text, font_family: "Montserrat", font_weight: "700",
         font_size: "2.7 vmin", fill_color: "#ffffff",
         stroke_color: "#000000", stroke_width: "0.35 vmin",
