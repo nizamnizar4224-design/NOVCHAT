@@ -4,13 +4,14 @@ import { SecretField } from "@/components/settings/SecretField";
 import { supabase } from "@/lib/supabase";
 import type { AssemblyProviderId, SettingsStatus } from "@/types";
 
-type SecretKey = "openai_api_key" | "heygen_api_key" | "elevenlabs_api_key" | "assembly_api_key";
+type SecretKey = "openai_api_key" | "heygen_api_key" | "elevenlabs_api_key" | "assembly_api_key" | "pixabay_api_key";
 
 const EMPTY_SECRETS: Record<SecretKey, string> = {
   openai_api_key: "",
   heygen_api_key: "",
   elevenlabs_api_key: "",
   assembly_api_key: "",
+  pixabay_api_key: "",
 };
 
 type ApiKeysFormProps = {
@@ -87,6 +88,23 @@ export function ApiKeysForm({ settings, onSaved }: ApiKeysFormProps) {
           value={secrets.elevenlabs_api_key}
           onChange={setSecret("elevenlabs_api_key")}
           hint="Generates the voiceover narration."
+        />
+      </Card>
+
+      <Card className="space-y-6 p-6 sm:p-8">
+        <div>
+          <h2 className="text-base font-semibold text-zinc-50">Stock media</h2>
+          <p className="mt-1 text-sm text-zinc-400">
+            Pixabay is used by the server to search for relevant stock video clips for script scenes. The key is stored privately.
+          </p>
+        </div>
+        <SecretField
+          id="pixabay_api_key"
+          label="Pixabay API key"
+          saved={settings.pixabay_api_key}
+          value={secrets.pixabay_api_key}
+          onChange={setSecret("pixabay_api_key")}
+          hint="Create or copy your API key from pixabay.com/api/docs/ and paste it here."
         />
       </Card>
 
