@@ -24,8 +24,7 @@ export function VideosPage({ videos, channels }: VideosPageProps) {
   const requestDelete = (pkg: VideoPackage) => {
     const isPublished = pkg.status === "published" || Boolean(pkg.youtube_video_id || pkg.youtube_url);
     if (isPublished) return;
-    const label = pkg.title ?? pkg.topic ?? "this video";
-    if (!window.confirm(`Are you sure you want to permanently delete this video?\n\n${label}`)) return;
+    // Use the in-page confirmation dialog below; do not trigger a browser popup.
     setDeleteError(null);
     setPasswordError(null);
     setDeletePassword("");
