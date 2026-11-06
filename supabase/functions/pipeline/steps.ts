@@ -19,6 +19,7 @@ import {
   downloadRemoteFile,
   fetchTrendingTopics,
   generateThumbnailImage,
+  generateSceneImage,
   synthesizeVoiceover,
   writeScriptPackage,
 } from "./providers.ts";
@@ -124,11 +125,39 @@ async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel):
 
   if (!pkg.assembly_render_id) {
     await setActivity(`[${channel.name}] Submitting script and voiceover to Creatomate`);
+    const imageModel = s.openai_image_model?.trim() || DEFAULT_OPENAI_IMAGE_MODEL;
+    const visualSegments = [];
+    for (const [index, segment] of pkg.script_segments.entries()) {
+      const existingPath = (segment as typeof segment & { visual_path?: string }).visual_path;
+      let visualPath = existingPath;
+      if (!visualPath) {
+        await setActivity(`[${channel.name}] Creating visual ${index + 1}/${pkg.script_segments.length}`);
+        const image = await generateSceneImage(s.openai_api_key!, imageModel, {
+          title: pkg.title ?? pkg.topic ?? "YouTube explainer",
+          label: segment.label,
+          narration: segment.narration,
+          broll: segment.broll,
+        });
+        visualPath = `${pkg.id}/scene-${index + 1}.png`;
+        await uploadFile(visualPath, image.bytes, image.mimeType);
+        // Persist each generated image path so a later retry does not pay to regenerate it.
+        const updatedSegments = pkg.script_segments.map((item, itemIndex) =>
+          itemIndex === index
+            ? { ...item, visual_path: visualPath }
+            : item,
+        );
+        await updatePackage(pkg.id, { script_segments: updatedSegments });
+      }
+      visualSegments.push({
+        ...segment,
+        visualUrl: await createSignedFileUrl(visualPath, SIGNED_LINK_TTL_SECONDS),
+      });
+    }
     const job = buildAssemblyJob({
       packageId: pkg.id,
       title: pkg.title ?? "",
       voiceUrl: await createSignedFileUrl(pkg.voice_path, SIGNED_LINK_TTL_SECONDS),
-      segments: pkg.script_segments,
+      segments: visualSegments,
     });
     const renderId = await provider.submit(job);
     await updatePackage(pkg.id, { assembly_render_id: renderId });
@@ -200,7 +229,7 @@ async function advancePackage(
     const channel = pkg.channel_id ? channels.get(pkg.channel_id) : undefined;
     if (!channel) throw new PermanentError("This video's channel was deleted");
     if (pkg.status === "queued" || pkg.status === "voicing") requirePrepareConfig(s, channel);
-    if (pkg.status === "assembling") requireFields(s, ["assembly_api_key"], "API Settings");
+    if (pkg.status === "assembling") requireFields(s, ["assembly_api_key", "openai_api_key"], "API Settings");
     if (pkg.status === "thumbnail") requireFields(s, ["openai_api_key"], "API Settings");
 
     const next = await runStep(pkg, s, channel);

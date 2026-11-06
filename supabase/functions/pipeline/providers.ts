@@ -193,6 +193,49 @@ export async function generateThumbnailImage(apiKey: string, model: string, prom
   return { bytes: Uint8Array.from(atob(b64), (char) => char.charCodeAt(0)), mimeType, extension: "png" };
 }
 
+
+/** Generate a scene-specific 16:9 visual using the configured OpenAI image model. */
+export async function generateSceneImage(
+  apiKey: string,
+  model: string,
+  input: { title: string; label: string; narration: string; broll: string },
+): Promise<ThumbnailImage> {
+  const prompt = [
+    "Create a photorealistic cinematic 16:9 documentary B-roll still for a YouTube explainer video.",
+    `Overall video topic: ${input.title}.`,
+    `Scene: ${input.label}.`,
+    `Narration context: ${input.narration.slice(0, 900)}.`,
+    `Visual direction: ${input.broll.slice(0, 400)}.`,
+    "Show a clear relevant real-world visual, editorial documentary photography, natural detailed lighting, strong composition.",
+    "No words, no letters, no captions, no logos, no watermarks, no graphic UI, no collage, no split screen.",
+  ].join(" ");
+  const res = await fetchWithRetry(
+    `${OPENAI_BASE}/images/generations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        prompt,
+        size: "1536x1024",
+        quality: "medium",
+        output_format: "png",
+        n: 1,
+      }),
+    },
+    { timeoutMs: 150_000 },
+  );
+  await assertOk(res, "OpenAI scene image generation");
+  const json = await res.json();
+  const b64 = json?.data?.[0]?.b64_json;
+  if (typeof b64 !== "string") throw new Error("OpenAI returned no scene image");
+  return {
+    bytes: Uint8Array.from(atob(b64), (char) => char.charCodeAt(0)),
+    mimeType: "image/png",
+    extension: "png",
+  };
+}
+
 export async function startAvatarRender(apiKey: string, avatarId: string, audioUrl: string): Promise<string> {
   const res = await fetchWithRetry(
     "https://api.heygen.com/v2/video/generate",
