@@ -126,7 +126,19 @@ class CreatomateProvider implements AssemblyProvider {
     await assertOk(res, "Creatomate render status");
     const render = await res.json();
     const status = String(render.status ?? "");
-    if (status === "succeeded") return { status: "completed", videoUrl: render.url ?? null, error: null };
+    if (status === "succeeded") {
+      // Creatomate's completed render normally exposes `url`. Keep the alternate
+      // output_url fallback so a response-shape variation cannot silently stall the package.
+      const videoUrl = typeof render.url === "string" && render.url.trim()
+        ? render.url
+        : typeof render.output_url === "string" && render.output_url.trim()
+          ? render.output_url
+          : null;
+      if (!videoUrl) {
+        throw new Error(`Creatomate render ${renderId} succeeded but returned no video URL`);
+      }
+      return { status: "completed", videoUrl, error: null };
+    }
     if (status === "failed") return { status: "failed", videoUrl: null, error: render.error_message ?? "Creatomate render failed" };
     return { status: "processing", videoUrl: null, error: null };
   }

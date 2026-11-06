@@ -135,17 +135,34 @@ async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel):
     return "assembling";
   }
 
+  await setActivity(`[${channel.name}] Checking Creatomate render ${pkg.assembly_render_id}`);
   const result = await provider.poll(pkg.assembly_render_id);
   if (result.status === "failed") throw new PermanentError(result.error ?? "Creatomate could not render the video");
-  if (result.status !== "completed" || !result.videoUrl) {
-    await setActivity(`[${channel.name}] Rendering video with Creatomate`);
+  if (result.status !== "completed") {
+    await setActivity(`[${channel.name}] Creatomate render is still processing`);
     return "assembling";
   }
+  if (!result.videoUrl) throw new Error(`Creatomate render ${pkg.assembly_render_id} completed without a video URL`);
+
+  await setActivity(`[${channel.name}] Downloading completed Creatomate MP4`);
   const bytes = await downloadRemoteFile(result.videoUrl);
+  if (bytes.byteLength < 1024) throw new Error("Creatomate returned an empty or incomplete MP4 file");
+
   const path = `${pkg.id}/final.mp4`;
+  await setActivity(`[${channel.name}] Saving MP4 to Supabase Storage (${bytes.byteLength} bytes)`);
   await uploadFile(path, bytes, "video/mp4");
-  await updatePackage(pkg.id, { final_video_path: path, status: "thumbnail" });
-  await setActivity(`[${channel.name}] Creatomate video ready; moving to thumbnail`);
+
+  // Keep both fields populated: final_video_path is the new assembly field,
+  // while video_path is retained for older UI components and integrations.
+  await updatePackage(pkg.id, {
+    final_video_path: path,
+    video_path: path,
+    status: "thumbnail",
+    attempts: 0,
+    next_attempt_at: null,
+    error_message: null,
+  });
+  await setActivity(`[${channel.name}] MP4 saved successfully; moving to thumbnail`);
   return "thumbnail";
 }
 
