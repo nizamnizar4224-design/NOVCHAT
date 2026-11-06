@@ -2,7 +2,7 @@
  * Reliability helpers shared by every provider call.
  *
  * Two layers of retry exist on purpose:
- *  1. fetchWithRetry  - short in-request retries (seconds) for blips: timeouts, 429, 5xx.
+ *  1. fetchWithRetry  - short in-request retries for transient failures only; billing/quota/auth errors stop immediately.
  *  2. step-level backoff (see steps.ts) - if a step still fails, the video is rescheduled with a
  *     longer exponential delay (1 min, 2 min, 4 min ...) and picked up by a later scheduler tick.
  *
@@ -29,14 +29,32 @@ export class PermanentError extends Error {
   }
 }
 
+/** Billing, quota, authentication and configuration failures must never be retried automatically.
+ * Providers sometimes return quota exhaustion as HTTP 429, so status alone is insufficient.
+ */
+export function isNonRetryableProviderFailure(status: number, detail = ""): boolean {
+  const text = detail.toLowerCase();
+  const billingOrQuota = [
+    "insufficient_quota", "insufficient credits", "credit balance", "billing_hard_limit",
+    "billing limit", "payment required", "out of credits", "quota exceeded",
+    "exceeded your current quota", "no remaining credits", "low balance",
+  ].some((marker) => text.includes(marker));
+  if (billingOrQuota) return true;
+  return status === 400 || status === 401 || status === 402 || status === 403 || status === 404 || status === 422;
+}
+
 export function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 export function isRetryableError(err: unknown): boolean {
   if (err instanceof PermanentError) return false;
-  if (err instanceof HttpError) return isRetryableStatus(err.status);
-  return true; // network errors, timeouts, malformed model output
+  if (err instanceof HttpError) {
+    return !isNonRetryableProviderFailure(err.status, err.message) && isRetryableStatus(err.status);
+  }
+  // Network errors/timeouts may be transient. Paid POST operations should additionally
+  // use provider idempotency keys or disable retries at the call site.
+  return true;
 }
 
 export function backoffDelayMs(attempt: number, baseMs: number, maxMs: number): number {
@@ -75,6 +93,11 @@ export async function fetchWithRetry(
     try {
       const res = await fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       if (!isRetryableStatus(res.status)) return res;
+      // Inspect the response body before retrying: several APIs (notably OpenAI)
+      // report exhausted credits as 429 / insufficient_quota. Retrying those calls
+      // only creates more requests and cannot restore the account balance.
+      const errorDetail = await res.clone().text().catch(() => "");
+      if (isNonRetryableProviderFailure(res.status, errorDetail)) return res;
       lastResponse = res;
       lastError = null;
       if (attempt <= retries) {
@@ -94,7 +117,10 @@ export async function fetchWithRetry(
 
 export async function assertOk(res: Response, label: string): Promise<void> {
   if (res.ok) return;
-  const detail = (await res.text()).slice(0, 300);
+  const detail = (await res.text()).slice(0, 1000);
+  if (isNonRetryableProviderFailure(res.status, detail)) {
+    throw new PermanentError(`${label} cannot be retried automatically. Check API key, model, permissions or billing/credits. Provider response: ${detail}`.slice(0, 1200));
+  }
   throw new HttpError(label, res.status, detail, parseRetryAfter(res));
 }
 
