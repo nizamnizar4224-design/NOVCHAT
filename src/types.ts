@@ -84,6 +84,7 @@ export type SettingsStatus = {
   elevenlabs_api_key: SecretHint;
   heygen_api_key: SecretHint;
   assembly_api_key: SecretHint;
+  pixabay_api_key: SecretHint;
   openai_text_model: string | null;
   openai_image_model: string | null;
   assembly_provider: AssemblyProviderId;
