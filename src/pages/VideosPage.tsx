@@ -40,10 +40,17 @@ export function VideosPage({ videos, channels }: VideosPageProps) {
       if (selectedId === pkg.id) setSelectedId(null);
       await videos.refresh();
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "Could not delete this video.");
-    } finally {
-      setDeletingId(null);
-    }
+  console.error("Video delete error:", err);
+
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === "object" && err !== null && "message" in err
+        ? String(err.message)
+        : String(err);
+
+  setDeleteError(message);
+}
   };
   const { loading, error } = videos;
   const channelNames = new Map(channels.map((channel) => [channel.id, channel.name]));
