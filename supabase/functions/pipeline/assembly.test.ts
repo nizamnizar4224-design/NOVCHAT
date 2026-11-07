@@ -115,3 +115,19 @@ test("a short sentence with a long actual voice duration still gets multiple vis
   assert.ok(Math.abs(beats.reduce((sum, beat) => sum + beat.duration_sec, 0) - 12) < 0.11);
   assert.ok(beats.every((beat) => beat.duration_sec <= 5.1), "no single shot should hold for the full 12 seconds");
 });
+
+
+test("visual beats keep only parent search hints that match the exact beat", () => {
+  const source: ScriptSegment = {
+    ...seg(12, 0, 16, "Dhanush received an award for his performance. Later, the film soundtrack became popular.", null),
+    broll: "Dhanush award ceremony film soundtrack concert generic cinema audience",
+    search_queries: ["Dhanush award ceremony", "film soundtrack concert", "generic cinema audience"],
+    subject_keywords: ["Dhanush", "award", "soundtrack", "concert", "audience"],
+  };
+  const beats = splitIntoVisualBeats(source);
+  assert.ok(beats.length >= 2);
+  const first = beats[0].segment;
+  assert.ok(first.search_queries?.some((q) => q.includes("dhanush") || q.includes("award")));
+  assert.ok(!first.search_queries?.some((q) => q.includes("soundtrack") || q.includes("concert")));
+  assert.ok(!first.broll.includes("soundtrack") && !first.broll.includes("concert"));
+});

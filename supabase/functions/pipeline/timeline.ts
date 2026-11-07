@@ -112,6 +112,25 @@ function sentenceChunks(text: string): string[] {
   return chunks.length ? chunks : [text.trim()].filter(Boolean);
 }
 
+
+function visualTerms(text: string): Set<string> {
+  return new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4));
+}
+
+function relevantParentTerms(values: string[] | undefined, beatText: string): string[] {
+  const beatTerms = visualTerms(beatText);
+  if (beatTerms.size === 0) return [];
+  const matched: string[] = [];
+  for (const value of values ?? []) {
+    const terms = [...visualTerms(value)].filter((term) => beatTerms.has(term) || [...beatTerms].some((beat) =>
+      (term.length >= 5 && beat.startsWith(term.slice(0, 5))) || (beat.length >= 5 && term.startsWith(beat.slice(0, 5)))
+    ));
+    // Keep only the words that belong to this narration beat, never the full broad parent query.
+    for (const term of terms) if (!matched.includes(term)) matched.push(term);
+  }
+  return matched;
+}
+
 export function splitIntoVisualBeats(segment: ScriptSegment): VisualBeat[] {
   const total = Math.max(0.1, segment.end_sec - segment.start_sec);
   let chunks = sentenceChunks(segment.narration);
@@ -141,10 +160,18 @@ export function splitIntoVisualBeats(segment: ScriptSegment): VisualBeat[] {
       index: segment.index * 100 + i,
       label: `${segment.label} beat ${i + 1}`,
       narration: text,
-      broll: text,
+      // Keep only parent visual hints that are actually mentioned in this beat. This avoids
+      // both extremes: losing useful named subjects and leaking the whole scene's unrelated query.
+      broll: [
+        ...relevantParentTerms([segment.broll], text),
+        text,
+      ].join(" ").slice(0, 300),
       on_screen_text: null,
-      search_queries: [],
-      subject_keywords: text.toLowerCase().match(/[a-z0-9]{4,}/g)?.slice(0, 5) ?? [],
+      search_queries: relevantParentTerms(segment.search_queries, text),
+      subject_keywords: [
+        ...relevantParentTerms(segment.subject_keywords, text),
+        ...(text.toLowerCase().match(/[a-z0-9]{4,}/g)?.slice(0, 5) ?? []),
+      ].slice(0, 6),
       start_sec: round1(segment.start_sec + cursor),
       end_sec: round1(segment.start_sec + cursor + duration),
     };

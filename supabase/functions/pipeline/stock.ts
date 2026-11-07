@@ -204,6 +204,12 @@ const OFFTOPIC_NATURE = new Set((
 const OFFTOPIC_ABSTRACT = new Set((
   "abstract background texture pattern wallpaper particles bokeh loop seamless gradient glitter fireworks"
 ).split(/\s+/));
+const OFFTOPIC_DECORATIVE = new Set((
+  "watch wristwatch clock hourglass calendar fireworks balloon balloons celebration party birthday christmas newyear"
+).split(/\s+/));
+const OFFTOPIC_ANIMALS = new Set((
+  "pig piggy piggybank cow bull bear lion tiger dog cat horse bird birds"
+).split(/\s+/));
 
 const synonymIndex = new Map<string, Set<string>>();
 for (const group of SYNONYM_GROUPS) {
@@ -456,15 +462,16 @@ export function scoreHit(
   const hitsGroup = (group: Set<string>) => [...tagStems].some((t) => group.has(t) && !sceneTokens.has(t));
   if (hitsGroup(OFFTOPIC_NATURE)) { penalty += 30; penalties.push("nature-tags"); }
   if (hitsGroup(OFFTOPIC_ABSTRACT)) { penalty += 15; penalties.push("abstract-tags"); }
+  if (hitsGroup(OFFTOPIC_DECORATIVE)) { penalty += 22; penalties.push("decorative-object-tags"); }
+  if (hitsGroup(OFFTOPIC_ANIMALS)) { penalty += 18; penalties.push("unrequested-animal-tags"); }
 
   const rankBonus = Math.max(0, 6 - rank * 0.5);
   const popularity = Math.min(3, Math.log10(1 + Number(hit.likes ?? 0) + Number(hit.downloads ?? 0) / 10) );
   // A broad topic match is not enough: require the actual scene subject to appear in tags/slug.
-  // When a scene has multiple distinct concepts, require at least two matched concepts.
-  if (top.length >= 2 && matchedConcepts < 2) penalties.push("insufficient-scene-concepts");
+  // Require at least one strong scene-specific subject anchor, but do not require every
+  // supporting noun to appear in a stock tag (e.g. calculator + desk).
   const score = coverage * 100 - penalty + rankBonus + popularity;
-  const strictAnchor = anchored && (top.length < 2 || (matchedConcepts >= 2 && strongMatches >= 1));
-  return { score: Math.round(score * 10) / 10, coverage: Math.round(coverage * 1000) / 1000, anchored: strictAnchor, penalties };
+  return { score: Math.round(score * 10) / 10, coverage: Math.round(coverage * 1000) / 1000, anchored, penalties };
 }
 
 export function toCandidate(

@@ -351,3 +351,11 @@ test("SearchBudget: unspent time and requests flow to later scenes", () => {
   assert.equal(later(ctx(2)), true, "but not beyond its 10s slice");
   assert.equal(first(ctx(0)), false, "first search of each kind is always allowed");
 });
+
+
+test("rejects decorative props that are not part of the narration subject", () => {
+  const scene: SceneForSearch = { index: 3, label: "Dividend yield", narration: "Dividend yield compares annual dividend with share price.", broll: "Dividend yield calculation using annual dividend and share price", on_screen_text: "DIVIDEND YIELD", subject_keywords: ["dividend", "share price"] };
+  const plan = buildSearchPlan(scene, "investing", false);
+  const unrelated = scoreHit(plan.concepts, { tags: "wristwatch, clock, luxury, closeup" }, 0, plan.sceneTokens);
+  assert.ok(!unrelated.anchored || unrelated.score < 42, `unrelated decorative footage must be rejected: ${unrelated.score}`);
+});
