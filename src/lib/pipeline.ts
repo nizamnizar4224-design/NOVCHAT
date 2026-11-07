@@ -27,3 +27,8 @@ export async function createSignedFileUrl(path: string, expiresInSeconds = 3600)
   if (error || !data) throw new Error("Could not load the audio file.");
   return data.signedUrl;
 }
+
+export async function recoverStalePipelineStatus(): Promise<string> {
+  await invokePipeline({ action: "recover" });
+  return "Stale pipeline status checked.";
+}
