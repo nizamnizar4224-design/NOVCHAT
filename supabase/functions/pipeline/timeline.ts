@@ -25,6 +25,10 @@ export type RawSegment = {
   broll: string;
   on_screen_text: string | null;
   visual_type?: "video" | "image";
+  /** Optional: short Pixabay queries (most specific first) written by the script model. */
+  search_queries?: string[];
+  /** Optional: nouns a matching stock clip must actually be about. */
+  subject_keywords?: string[];
 };
 
 export type ScriptSegment = RawSegment & {

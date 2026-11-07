@@ -51,6 +51,14 @@ function asText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asStringList(value: unknown, max: number, maxLen: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((v): v is string => typeof v === "string" && v.trim() !== "")
+    .map((v) => v.trim().slice(0, maxLen))
+    .slice(0, max);
+}
+
 function parseSegments(value: unknown): RawSegment[] {
   if (!Array.isArray(value) || value.length < 3) {
     throw new Error("OpenAI returned too few script segments");
@@ -68,6 +76,8 @@ function parseSegments(value: unknown): RawSegment[] {
       broll: asText(row.broll).slice(0, 300),
       on_screen_text: onScreen === "" ? null : onScreen.slice(0, 80),
       visual_type: asText(row.visual_type).toLowerCase() === "image" ? "image" : "video",
+      search_queries: asStringList(row.search_queries, 5, 60),
+      subject_keywords: asStringList(row.subject_keywords, 4, 30),
     };
   });
   return segments;
@@ -119,11 +129,11 @@ export async function writeScriptPackage(
     "Create one YouTube video of about 4 minutes (roughly 500 to 600 spoken words in total).",
     "Structure the video as 10 to 14 segments of roughly 12 to 25 seconds each. Keep narration concise, natural and easy to understand; remove filler, repeated ideas and generic introductions.",
     "OPENING HOOK: the first segment must start immediately with the exact topic and a compelling, specific question, surprising fact or useful promise. No greeting, channel intro, vague teaser or unrelated stock visual. The first 5-10 seconds must make the viewer want the answer.",
-    "VISUAL STORYTELLING: every segment must describe one specific visible action/object that directly illustrates the exact narration in that segment. Never use generic scenery, beaches, random nature, decorative backgrounds, unrelated people or abstract stock footage. Do not use a visual merely because it matches one broad word such as business, money or technology.",
-    "B-ROLL SEARCH QUERY: broll must be a concise Pixabay search query of 3 to 6 concrete keywords, not a full sentence. Include the main subject and action/object. Example: 'mutual fund factsheet laptop investor' or 'smartphone investment app hands'. Do not add generic words like cinematic, footage, beautiful, background, concept or stock.",
-    "For every segment, choose visual_type (video or image). Prefer a relevant video only when a suitable result is long enough for the planned use. Never stretch, loop or reuse a short clip to fill a longer scene. If no sufficiently relevant, sufficiently long video exists, use a relevant still image with subtle motion. If neither matches, use a clean branded background rather than unrelated footage.",
-    "ON-SCREEN TEXT: write a short, readable phrase of at most 5 words. It must summarize the key idea, not repeat the full narration. This text is displayed in the exact horizontal and vertical center of the frame, so keep it short and suitable for a centered title.",
-    "ENDING: the final segment must deliver a brief recap and clearly say Like and Subscribe. Set on_screen_text to LIKE & SUBSCRIBE. The video editor adds matching Like, Subscribe and Bell graphics; do not add a generic subscribe message earlier.",
+    "VISUAL STORYTELLING: every segment must describe one concrete visual that directly illustrates its narration. Prefer specific real-world actions, objects, screens, documents, people and locations. Never use generic scenery, beaches, random nature, abstract finance imagery or unrelated footage. Avoid repeating the same visual idea in adjacent scenes.",
+    "STOCK SEARCH: search_queries and subject_keywords must describe what the camera sees for THIS segment (the thing being discussed), never the video's general mood. In the final Like and Subscribe segment base them on the recap subject, not on subscribe buttons.",
+    "For every segment, choose visual_type (video or image). Prefer video when a relevant action is available; use an image only when no suitable video is likely. Keep the visual useful for the full segment duration. The editor will reject stock video shorter than the scene rather than stretch or loop it.",
+    "ON-SCREEN TEXT: write a short, readable phrase of at most 5 words. It must summarize the key idea, not repeat the full narration. Use centered placement in the video editor.",
+    "ENDING: the final segment must deliver a brief recap and clearly say Like and Subscribe. Set on_screen_text to LIKE AND SUBSCRIBE or another concise CTA so matching icons can be displayed. Do not add a generic subscribe message earlier.",
     "Retention rules: change the visual at every segment boundary; plant an open loop early and pay it off later; keep all footage tightly relevant to the exact topic.",
     "",
     "Return JSON with exactly these keys:",
@@ -136,9 +146,11 @@ export async function writeScriptPackage(
     "  label (string, 2-4 word name of this beat),",
     "  narration (string, spoken words only: no stage directions, no timestamps, no speaker names),",
     `  camera_angle (one of: ${CAMERA_ANGLES.join(", ")}),`,
-    "  broll (string, a concise 3-to-6-keyword Pixabay search query for a specific visual directly related to this narration; never empty),",
+    "  broll (string, a concrete stock visual to show during this segment, specific enough to search Pixabay; never empty because this channel uses stock footage and text, not an avatar),",
     "  on_screen_text (string, at most 5 words of overlay text, or empty string),",
-    "  visual_type (string: video or image)).",
+    "  visual_type (string: video or image),",
+    "  search_queries (array of 3 to 4 short Pixabay search queries for this segment, each 1 to 3 plain words, most specific first, ending with one broader single-word query; concrete visible nouns only, e.g. [\"smartphone banking app\", \"person using smartphone\", \"smartphone\"]; no verbs like showing, no abstract words),",
+    "  subject_keywords (array of 1 to 3 concrete nouns that a matching stock clip must actually show, e.g. [\"smartphone\", \"bank\"])).",
     "Do not include start or end times; they are calculated from the narration afterwards.",
   ].join("\n");
 

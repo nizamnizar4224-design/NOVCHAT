@@ -4,7 +4,9 @@ import type { ScriptSegment } from "./timeline.ts";
 
 export type AssemblyProviderId = "none" | "creatomate" | "shotstack";
 export type CaptionCue = { start_sec: number; end_sec: number; text: string };
-export type BrollClip = { scene_index: number; start_sec: number; end_sec: number; query: string; visual_type: "video" | "image"; sourceUrl?: string | null; sourceDuration?: number | null };
+/** One stock asset placed inside a scene. Pieces are contiguous and never exceed the clip's native length. */
+export type MediaPiece = { kind: "video" | "image"; url: string; offset_sec: number; duration_sec: number; trim_start_sec: number; source_id: string };
+export type BrollClip = { scene_index: number; start_sec: number; end_sec: number; query: string; visual_type: "video" | "image"; pieces: MediaPiece[] };
 export type AssemblyJob = {
   packageId: string; title: string; width: number; height: number;
   voiceUrl: string; segments: ScriptSegment[];
@@ -31,8 +33,69 @@ export function buildCaptionCues(segments: ScriptSegment[]): CaptionCue[] {
 export function buildAssemblyJob(input: { packageId: string; title: string; voiceUrl: string; segments: ScriptSegment[] }): AssemblyJob {
   return { packageId: input.packageId, title: input.title, width: 1920, height: 1080,
     voiceUrl: input.voiceUrl, segments: input.segments,
-    broll: input.segments.map(s => ({ scene_index: s.index, start_sec: s.start_sec, end_sec: s.end_sec, query: s.broll.trim() || s.label, visual_type: s.visual_type ?? "video", sourceUrl: null, sourceDuration: null })),
+    broll: input.segments.map(s => ({ scene_index: s.index, start_sec: s.start_sec, end_sec: s.end_sec, query: s.broll.trim() || s.label, visual_type: s.visual_type ?? "video", pieces: [] })),
     captions: buildCaptionCues(input.segments) };
+}
+
+
+// Creatomate positions an element by its ANCHOR point (default 50%/50%), so x:"10%" put the centre of an
+// 80%-wide text at 10% of the width (clipped/off-centre). Every element now states its centre explicitly.
+const CENTER = { x: "50%", y: "50%", x_anchor: "50%", y_anchor: "50%" } as const;
+const FULL_FRAME = { ...CENTER, width: "100%", height: "100%" } as const;
+const CTA_PATTERN = /(subscribe|like|bell)/i;
+
+/** Time (seconds, relative to the scene) at which the narration reaches the first matching word. */
+export function cueTimeInScene(segment: ScriptSegment, pattern: RegExp): number | null {
+  const words = segment.narration.split(/\s+/).filter(Boolean);
+  const at = words.findIndex((w) => pattern.test(w));
+  if (at < 0 || words.length === 0) return null;
+  return ((segment.end_sec - segment.start_sec) * at) / words.length;
+}
+
+/** Final CTA: like icon, subscribe button (clicks to "SUBSCRIBED"), bell. Timed to the voiceover words. */
+export function buildCtaElements(segment: ScriptSegment, sceneDuration: number): Record<string, unknown>[] {
+  const latest = Math.max(0, sceneDuration - 3.5);
+  const likeAt = Math.min(latest, Math.max(0, cueTimeInScene(segment, /^like/i) ?? sceneDuration - 6));
+  const subRaw = cueTimeInScene(segment, /^subscrib/i);
+  const subAt = Math.min(sceneDuration - 2.5, Math.max(likeAt + 0.8, subRaw ?? likeAt + 1.2));
+  const bellAt = Math.min(sceneDuration - 1.5, subAt + 1.4);
+  const clickAt = Math.min(sceneDuration - 0.8, subAt + 1.0);
+  const until = (t: number) => Math.max(0.3, sceneDuration - t);
+  const pop = (from = "0%", to = "100%") => ({ time: 0, duration: 0.4, type: "scale", easing: "quadratic-out", fade: true, start_scale: from, end_scale: to });
+  const pulse = (at: number) => ({ time: at, duration: 0.25, type: "scale", easing: "quadratic-in-out", fade: false, start_scale: "100%", end_scale: "115%" });
+  const label = (text: string, x: string, t: number) => ({
+    type: "text", track: 7, time: t, duration: until(t), ...CENTER, x, y: "64%", width: "24%", text,
+    font_family: "Montserrat", font_weight: "800", font_size: "3.4 vmin", fill_color: "#ffffff",
+    stroke_color: "#000000", stroke_width: "0.25 vmin", x_alignment: "50%", y_alignment: "50%",
+    animations: [pop()],
+  });
+  const items: Record<string, unknown>[] = [
+    { type: "text", track: 4, time: likeAt, duration: until(likeAt), ...CENTER, y: "30%", width: "80%",
+      text: "LIKE & SUBSCRIBE", font_family: "Montserrat", font_weight: "800", font_size: "8 vmin",
+      fill_color: "#ffffff", stroke_color: "#000000", stroke_width: "0.3 vmin", x_alignment: "50%", y_alignment: "50%",
+      animations: [pop("80%", "100%")] },
+    // Like
+    { type: "text", track: 5, time: likeAt, duration: until(likeAt), ...CENTER, x: "27%", y: "50%", width: "24%",
+      text: "\u{1F44D}", font_size: "16 vmin", x_alignment: "50%", y_alignment: "50%", animations: [pop("0%", "100%"), pulse(0.6)] },
+    label("LIKE", "27%", likeAt),
+    // Subscribe button: red, then a "click" pulse and a grey SUBSCRIBED state
+    { type: "shape", track: 5, time: subAt, duration: until(subAt), ...CENTER, x: "50%", y: "50%", width: "26%", height: "12%",
+      fill_color: "#ff0000", animations: [pop("0%", "100%"), pulse(clickAt - subAt)] },
+    { type: "text", track: 6, time: subAt, duration: Math.max(0.3, clickAt - subAt), ...CENTER, x: "50%", y: "50%", width: "24%",
+      text: "SUBSCRIBE", font_family: "Montserrat", font_weight: "800", font_size: "4.2 vmin", fill_color: "#ffffff",
+      x_alignment: "50%", y_alignment: "50%", animations: [pop()] },
+    { type: "shape", track: 6, time: clickAt + 0.25, duration: until(clickAt + 0.25), ...CENTER, x: "50%", y: "50%", width: "26%", height: "12%", fill_color: "#4b5563" },
+    { type: "text", track: 7, time: clickAt + 0.25, duration: until(clickAt + 0.25), ...CENTER, x: "50%", y: "50%", width: "24%",
+      text: "SUBSCRIBED", font_family: "Montserrat", font_weight: "800", font_size: "3.8 vmin", fill_color: "#ffffff",
+      x_alignment: "50%", y_alignment: "50%" },
+    // Bell: pops in, then rings (repeated scale pulses)
+    { type: "text", track: 5, time: bellAt, duration: until(bellAt), ...CENTER, x: "73%", y: "50%", width: "24%",
+      text: "\u{1F514}", font_size: "16 vmin", x_alignment: "50%", y_alignment: "50%",
+      animations: [pop("0%", "100%"), pulse(0.6), pulse(1.0), pulse(1.4)] },
+    label("TURN ON THE BELL", "73%", bellAt),
+  ];
+  // Every element gets its own track (elements that overlap in time must not share one).
+  return items.map((item, i) => ({ ...item, track: 4 + i }));
 }
 
 class CreatomateProvider implements AssemblyProvider {
@@ -42,65 +105,81 @@ class CreatomateProvider implements AssemblyProvider {
   /** Build a complete, template-free Creatomate RenderScript from the actual script timeline. */
   private buildRenderScript(job: AssemblyJob): Record<string, unknown> {
     const duration = Math.max(1, job.segments[job.segments.length - 1]?.end_sec ?? 1);
+    // Branded backdrop colours: only visible where a scene has no relevant stock media.
     const palette = ["#101827", "#172554", "#1f2937", "#27213d", "#102a2a"];
     const elements: Record<string, unknown>[] = [
       { type: "audio", track: 1, time: 0, duration: null, source: job.voiceUrl, audio_fade_out: 0.6 },
     ];
+    const lastIndex = job.segments.length - 1;
 
-    // Each scene uses only its matching stock asset. Video clips are accepted only when
-    // their native duration covers the scene; still images receive a gentle zoom.
     for (const [index, segment] of job.segments.entries()) {
       const sceneDuration = Math.max(0.5, segment.end_sec - segment.start_sec);
-      const asset = job.broll.find((clip) => clip.scene_index === segment.index && clip.sourceUrl);
-      const headline = (segment.on_screen_text || segment.label || "").trim().slice(0, 90);
+      const clip = job.broll.find((c) => c.scene_index === segment.index);
+      const isHook = index === 0;
+      const isLast = index === lastIndex;
       const sceneElements: Record<string, unknown>[] = [];
-      if (asset?.sourceUrl) {
-        sceneElements.push({
-          type: asset.visual_type === "image" ? "image" : "video",
-          track: 1, time: 0, duration: sceneDuration, source: asset.sourceUrl,
-          fit: "cover", ...(asset.visual_type === "video" ? { volume: 0 } : {
-            animations: [{ time: 0, duration: sceneDuration, type: "scale", start_scale: 1, end_scale: 1.08 }],
-          }),
-        });
+
+      // Stock media: each piece plays at native speed (videos are trimmed, never looped or stretched).
+      const pieces = clip?.pieces ?? [];
+      for (const [pieceIndex, piece] of pieces.entries()) {
+        const nextOffset = pieces[pieceIndex + 1]?.offset_sec ?? sceneDuration;
+        const pieceDuration = Math.max(0.2, Math.min(piece.duration_sec, nextOffset - piece.offset_sec, sceneDuration - piece.offset_sec));
+        if (piece.kind === "image") {
+          const zoomIn = pieceIndex % 2 === 0;
+          sceneElements.push({
+            type: "image", track: 1, time: piece.offset_sec, duration: pieceDuration, source: piece.url,
+            ...FULL_FRAME, fit: "cover",
+            animations: [{ time: 0, duration: pieceDuration, type: "scale", easing: "linear", fade: false,
+              start_scale: zoomIn ? "100%" : "110%", end_scale: zoomIn ? "110%" : "100%" }],
+          });
+        } else {
+          sceneElements.push({
+            type: "video", track: 1, time: piece.offset_sec, duration: pieceDuration, source: piece.url,
+            ...FULL_FRAME, fit: "cover", volume: "0%", trim_start: piece.trim_start_sec,
+          });
+        }
       }
-      sceneElements.push({ type: "shape", track: 2, time: 0, duration: sceneDuration,
-        x: "0%", y: "0%", width: "100%", height: "100%", fill_color: "#000000", opacity: 28 });
-      if (headline) {
+
+      // Light dim for text contrast (full frame, centre-anchored).
+      sceneElements.push({ type: "shape", track: 2, time: 0, duration: sceneDuration, ...FULL_FRAME,
+        fill_color: "#000000", opacity: isLast ? "40%" : "30%" });
+
+      // Headline: centred horizontally and vertically, inside a 10% safe margin, shown briefly so
+      // the footage stays visible. The closing scene draws its own call to action instead.
+      const rawHeadline = (segment.on_screen_text || segment.label || "").trim();
+      const hookFallback = isHook ? job.title.split(/\s+/).slice(0, 5).join(" ") : "";
+      const headline = (rawHeadline || hookFallback).slice(0, 60);
+      const showHeadline = headline !== "" && !(isLast && CTA_PATTERN.test(headline));
+      if (showHeadline) {
+        const shown = Math.min(sceneDuration, isHook ? 6 : 4.5);
         sceneElements.push({
-          type: "text", track: 3, time: 0.25, duration: Math.max(0.4, sceneDuration - 0.25),
-          x: "50%", y: "50%", x_anchor: "50%", y_anchor: "50%",
-          width: "80%", height: "38%", text: headline,
-          font_family: "Montserrat", font_weight: "800", font_size: "5.5 vmin",
-          font_size_minimum: "3.2 vmin", font_size_maximum: "5.5 vmin",
-          fill_color: "#ffffff", stroke_color: "#000000", stroke_width: "0.25 vmin",
+          type: "text", track: 3, time: 0.15, duration: Math.max(0.4, shown - 0.15),
+          ...CENTER, y: "50%", width: "80%",
+          text: isHook ? headline.toUpperCase() : headline,
+          font_family: "Montserrat", font_weight: "800", font_size: isHook ? "8.5 vmin" : "6.5 vmin",
+          fill_color: "#ffffff", stroke_color: "#000000", stroke_width: "0.3 vmin",
           x_alignment: "50%", y_alignment: "50%",
           animations: [{ time: 0, duration: 0.45, type: "text-slide", direction: "up", scope: "split-clip", split: "line" }],
         });
       }
-      if (index === job.segments.length - 1) {
-        sceneElements.push({ type: "text", track: 4, time: Math.max(0, sceneDuration - 5),
-          duration: Math.min(5, sceneDuration), x: "50%", y: "72%",
-          x_anchor: "50%", y_anchor: "50%", width: "80%", height: "16%",
-          text: "👍  LIKE     SUBSCRIBE  🔔", font_family: "Montserrat", font_weight: "800",
-          font_size: "4.2 vmin", fill_color: "#ffffff", x_alignment: "50%", y_alignment: "50%",
-          animations: [{ time: 0, duration: 0.5, type: "text-slide", direction: "up", scope: "split-clip" }],
-        });
-      }
+
+      if (isLast) sceneElements.push(...buildCtaElements(segment, sceneDuration));
+
       elements.push({ name: `Scene-${index + 1}`, type: "composition", track: 2,
         time: segment.start_sec, duration: sceneDuration, width: job.width, height: job.height,
         fill_color: palette[index % palette.length], elements: sceneElements });
     }
 
+    // Subtitles live in their own bottom safe area (86% line), separate from headlines/CTA.
     for (const [index, cue] of job.captions.entries()) {
       elements.push({
         name: `Caption-${index + 1}`,
         type: "text", track: 3, time: cue.start_sec,
         duration: Math.max(0.2, cue.end_sec - cue.start_sec),
-        x: "50%", y: "87%", x_anchor: "50%", y_anchor: "50%",
-        width: "80%", height: "10%",
+        ...CENTER, y: "86%", width: "80%",
         text: cue.text, font_family: "Montserrat", font_weight: "700",
-        font_size: "2.7 vmin", fill_color: "#ffffff",
-        stroke_color: "#000000", stroke_width: "0.35 vmin",
+        font_size: "3.2 vmin", fill_color: "#ffffff",
+        stroke_color: "#000000", stroke_width: "0.4 vmin",
         x_alignment: "50%", y_alignment: "50%",
       });
     }
