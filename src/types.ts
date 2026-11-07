@@ -27,6 +27,9 @@ export type ScriptSegment = {
   camera_angle: CameraAngle;
   broll: string;
   on_screen_text: string | null;
+  visual_type?: "video" | "image";
+  search_queries?: string[];
+  subject_keywords?: string[];
 };
 
 export type VideoPackage = {
