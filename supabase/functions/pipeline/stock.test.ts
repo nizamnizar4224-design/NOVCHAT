@@ -65,7 +65,7 @@ test("ROOT CAUSE: old matcher accepted unrelated footage, new scorer rejects it"
   for (const tags of unrelated.slice(0, 2).concat(unrelated[3])) {
     if (tags !== "storm, clouds, sky") assert.equal(oldPixabayTagMatch(query, tags), true, `old matcher accepted "${tags}"`);
     const s = scoreHit(plan.concepts, { tags }, 0, plan.sceneTokens);
-    assert.ok(!s.anchored || s.score < 30, `new scorer must reject "${tags}" (score ${s.score}, anchored ${s.anchored})`);
+    assert.ok(!s.anchored || s.score < 42, `new scorer must reject "${tags}" (score ${s.score}, anchored ${s.anchored})`);
   }
   const good = scoreHit(plan.concepts, { tags: "smartphone, banking, finance, hand" }, 0, plan.sceneTokens);
   assert.ok(good.anchored && good.score > 50, `relevant clip should score high, got ${good.score}`);

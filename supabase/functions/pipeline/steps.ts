@@ -1,6 +1,7 @@
 import {
   type Channel,
   createSignedFileUrl,
+  cleanupTemporaryStockAssets,
   db,
   downloadFile,
   loadChannel,
@@ -117,7 +118,7 @@ async function thumbnailStep(pkg: VideoPackage, s: Settings, channel: Channel): 
   return "ready";
 }
 
-const DOWNLOAD_CONCURRENCY = 3;
+const DOWNLOAD_CONCURRENCY = 1; // Keep external memory bounded on Supabase Edge Functions.
 
 type SceneSelection = { clip: BrollClip; plan: ScenePlan };
 
@@ -299,6 +300,16 @@ async function assemblingStep(pkg: VideoPackage, s: Settings, channel: Channel):
     next_attempt_at: null,
     error_message: null,
   });
+
+  // The final MP4 is now safely stored. Temporary Pixabay downloads are no longer needed.
+  // Cleanup is best-effort: never fail a completed render because temporary-file deletion failed.
+  try {
+    await setActivity(`[${channel.name}] Cleaning temporary stock footage`);
+    const removed = await cleanupTemporaryStockAssets(pkg.id);
+    console.log(`Removed ${removed} temporary stock assets for package ${pkg.id}`);
+  } catch (cleanupError) {
+    console.warn(`Temporary stock cleanup failed for package ${pkg.id}:`, cleanupError);
+  }
   await setActivity(`[${channel.name}] MP4 saved successfully; moving to thumbnail`);
   return "thumbnail";
 }

@@ -87,7 +87,7 @@ export const createLedger = (): Ledger => ({ used: new Set(), tagSets: [] });
 // ---------------------------------------------------------------------------------------------
 export const TUNING = {
   /** A scene candidate must reach this relevance score (0-100+) after penalties. */
-  minSceneScore: 30,
+  minSceneScore: 42,
   /** Topic-level (last resort) candidates need to match the overall video topic with this score. */
   minTopicScore: 34,
   /** A video shorter than this (usable seconds) is not worth a cut. */
@@ -385,8 +385,10 @@ export function buildSearchPlan(scene: SceneForSearch, topicText: string, isFina
     pushTopic(concept.term);
   }
 
+  // Only scene-local terms may exempt a tag from off-topic penalties. The overall video
+  // topic must not make unrelated imagery look relevant to an individual narration beat.
   const sceneTokens = new Set<string>(
-    rawTokens(`${scene.broll} ${scene.label} ${scene.on_screen_text ?? ""} ${scene.narration} ${topicText}`).map(stem),
+    rawTokens(`${scene.broll} ${scene.label} ${scene.on_screen_text ?? ""} ${scene.narration}`).map(stem),
   );
 
   return {
@@ -434,12 +436,18 @@ export function scoreHit(
 
   let matched = 0;
   let anchored = false;
+  let matchedConcepts = 0;
+  let strongMatches = 0;
   for (const concept of top) {
     let best = 0;
     for (const t of tagStems) best = Math.max(best, matchValue(concept, t));
     if (best < 1) for (const t of slugStems) best = Math.max(best, matchValue(concept, t) * 0.7);
     matched += concept.weight * best;
-    if (!concept.generic && concept.weight >= 0.8 && best >= 0.65) anchored = true;
+    if (best >= 0.65) matchedConcepts++;
+    if (!concept.generic && concept.weight >= 0.8 && best >= 0.65) {
+      anchored = true;
+      strongMatches++;
+    }
   }
   const coverage = matched / denominator;
 
@@ -451,8 +459,12 @@ export function scoreHit(
 
   const rankBonus = Math.max(0, 6 - rank * 0.5);
   const popularity = Math.min(3, Math.log10(1 + Number(hit.likes ?? 0) + Number(hit.downloads ?? 0) / 10) );
+  // A broad topic match is not enough: require the actual scene subject to appear in tags/slug.
+  // When a scene has multiple distinct concepts, require at least two matched concepts.
+  if (top.length >= 2 && matchedConcepts < 2) penalties.push("insufficient-scene-concepts");
   const score = coverage * 100 - penalty + rankBonus + popularity;
-  return { score: Math.round(score * 10) / 10, coverage: Math.round(coverage * 1000) / 1000, anchored, penalties };
+  const strictAnchor = anchored && (top.length < 2 || (matchedConcepts >= 2 && strongMatches >= 1));
+  return { score: Math.round(score * 10) / 10, coverage: Math.round(coverage * 1000) / 1000, anchored: strictAnchor, penalties };
 }
 
 export function toCandidate(
@@ -667,13 +679,13 @@ export async function planScene(
     const minScore = tier === "scene" ? TUNING.minSceneScore : TUNING.minTopicScore;
     hits.forEach((hit, rank) => {
       const scored = scoreHit(concepts, hit, rank, plan.sceneTokens);
-      if (!scored.anchored || scored.score < minScore) return;
+      if (!scored.anchored || scored.coverage < 0.38 || scored.score < minScore) return;
       const candidate = toCandidate(kind, hit, scored, query, tier);
       if (!candidate || ledger.used.has(candidate.key)) return;
       // Penalise near-identical shots already used in this video (same uploader series, same tags).
       const similar = ledger.tagSets.some((tags) => jaccard(tags, candidate.tagStems) >= TUNING.nearDuplicateJaccard);
       if (similar) candidate.score -= 8;
-      if (candidate.score < minScore) return;
+      if (candidate.score < minScore || candidate.coverage < 0.38) return;
       const pool = kind === "video" ? videos : images;
       const existing = pool.get(candidate.key);
       if (!existing || existing.score < candidate.score) pool.set(candidate.key, candidate);
