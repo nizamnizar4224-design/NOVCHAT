@@ -99,7 +99,7 @@ export const TUNING = {
   maxVideoPieces: 4,
   maxImagePieces: 4,
   maxVideoQueries: 5,
-  maxImageQueries: 3,
+  maxImageQueries: 5,
   maxTopicQueries: 2,
   /** Gaps shorter than this are ignored (sub-frame rounding). */
   gapToleranceSec: 0.15,
@@ -378,6 +378,14 @@ export function buildSearchPlan(scene: SceneForSearch, topicText: string, isFina
   for (let i = 0; i + 1 < Math.min(subject.length, 5); i++) push(`${subject[i]} ${subject[i + 1]}`);
   for (const concept of strong.slice(0, 2)) push(concept.term);
   push(distinctSubject(labelTokens).slice(0, 2).join(" "));
+
+  // Keep the video's named topic in a compound query without losing the current
+  // narration beat's subject (e.g. UPI + PIN safety, not generic finance footage).
+  const topicHead = distinctSubject(topicTokens).slice(0, 1)[0];
+  const sceneHead = subject.slice(0, 2);
+  if (topicHead && sceneHead.length) push([topicHead, ...sceneHead].slice(0, 4).join(" "));
+  if (topicHead && sceneHead.length > 1) push([topicHead, sceneHead[sceneHead.length - 1]].join(" "));
+
   const cappedQueries = queries.slice(0, 8);
 
   const topicQueries: string[] = [];

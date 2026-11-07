@@ -359,3 +359,24 @@ test("rejects decorative props that are not part of the narration subject", () =
   const unrelated = scoreHit(plan.concepts, { tags: "wristwatch, clock, luxury, closeup" }, 0, plan.sceneTokens);
   assert.ok(!unrelated.anchored || unrelated.score < 42, `unrelated decorative footage must be rejected: ${unrelated.score}`);
 });
+
+
+test("search plan keeps the overall topic in a scene-specific compound query", () => {
+  const scene: SceneForSearch = {
+    index: 7,
+    label: "PIN safety",
+    narration: "Never share your UPI PIN with anyone, even when receiving money.",
+    broll: "UPI PIN security on smartphone payment app",
+    on_screen_text: "KEEP YOUR PIN PRIVATE",
+    subject_keywords: ["UPI PIN", "payment security", "smartphone"],
+  };
+  const plan = buildSearchPlan(scene, "UPI digital payments in India", false);
+  assert.ok(plan.queries.some((q) => /upi/.test(q) && /pin|security|smartphone/.test(q)), `expected a topic + scene-specific query, got: ${plan.queries.join(" | ")}`);
+  assert.ok(plan.queries.every((q) => q.split(" ").length <= 4));
+});
+
+test("image search is attempted when video results cannot cover a beat", async () => {
+  const src = new FakeSource({ "*": [video("smartphone banking app", 3)] }, { "*": [image("smartphone UPI payment QR code")] });
+  const plan = await planScene(phoneScene, 12, src, createLedger(), { topicText: "mobile banking", isFinalScene: false });
+  assert.ok(src.calls.some((call) => call.startsWith("image:")), "image fallback should be attempted when video coverage is insufficient");
+});
