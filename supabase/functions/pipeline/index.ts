@@ -14,7 +14,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-type Action = "prepare" | "publish" | "tick" | "retry";
+type Action = "prepare" | "publish" | "tick" | "retry" | "recover";
 type JobParams = { channelId?: string; packageId?: string };
 
 const LOCK_STALE_MS = 10 * 60_000;
@@ -32,7 +32,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 function isAction(value: unknown): value is Action {
-  return value === "prepare" || value === "publish" || value === "tick" || value === "retry";
+  return value === "prepare" || value === "publish" || value === "tick" || value === "retry" || value === "recover";
 }
 
 async function isAuthorized(req: Request, action: Action): Promise<boolean> {
@@ -161,6 +161,32 @@ async function runScheduled(settings: Settings): Promise<string[]> {
   return errors;
 }
 
+async function recoverStalePipeline(): Promise<{ recovered: boolean; reason: string }> {
+  const { data: state, error: stateError } = await db.from("pipeline_state")
+    .select("running, activity_updated_at").eq("id", 1).single();
+  if (stateError) throw new Error(`Could not read pipeline state: ${stateError.message}`);
+  if (!state.running) return { recovered: false, reason: "Pipeline is already idle." };
+  const ageMs = Date.now() - Date.parse(state.activity_updated_at);
+  if (!Number.isFinite(ageMs) || ageMs < LOCK_STALE_MS) {
+    return { recovered: false, reason: "The last activity is recent; the job may still be running." };
+  }
+  const activeStatuses = ["queued", "voicing", "thumbnail", "render_submit", "rendering", "assembling", "uploading"];
+  const { data: activePackages, error: packageError } = await db.from("video_packages")
+    .select("id").in("status", activeStatuses).limit(1);
+  if (packageError) throw new Error(`Could not verify active video jobs: ${packageError.message}`);
+  if ((activePackages ?? []).length > 0) {
+    return { recovered: false, reason: "An in-progress video record still exists. No status was changed." };
+  }
+  const { error: updateError } = await db.from("pipeline_state").update({
+    running: false,
+    activity: "Idle — previous job stopped without completing",
+    activity_updated_at: new Date().toISOString(),
+    last_error: "Recovered a stale pipeline lock. No in-progress video records were found.",
+  }).eq("id", 1).eq("running", true).eq("activity_updated_at", state.activity_updated_at);
+  if (updateError) throw new Error(`Could not recover stale pipeline state: ${updateError.message}`);
+  return { recovered: true, reason: "Stale pipeline status cleared safely." };
+}
+
 async function runJob(action: Action, params: JobParams): Promise<void> {
   const deadline = Date.now() + WORK_BUDGET_MS;
   let lastError: string | null | undefined = undefined;
@@ -215,6 +241,12 @@ Deno.serve(async (req: Request) => {
     if (action === "retry") {
       if (typeof body?.package_id !== "string") return json({ error: "package_id is required" }, 400);
       params.packageId = body.package_id;
+    }
+
+    if (action === "recover") {
+      const result = await recoverStalePipeline();
+      const status = result.recovered || result.reason === "Pipeline is already idle." ? 200 : 409;
+      return json(result, status);
     }
 
     const acquired = await acquireLock();
