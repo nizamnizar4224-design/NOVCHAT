@@ -39,7 +39,6 @@ export type VideoPackage = {
   video_path: string | null;
   final_video_path: string | null;
   script_segments: ScriptSegment[] | null;
-  scene_assets?: Array<Record<string, unknown>>;
   attempts: number;
   next_attempt_at: string | null;
   failed_from: PackageStatus | null;
