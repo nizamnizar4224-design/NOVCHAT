@@ -95,9 +95,9 @@ export const TUNING = {
   /** Safety margin removed from every clip's native duration so we never run past its last frame. */
   videoTailMarginSec: 0.15,
   /** Longest time one still image should be on screen before another relevant image takes over. */
-  imageMaxSec: 10,
+  imageMaxSec: 5,
   maxVideoPieces: 4,
-  maxImagePieces: 3,
+  maxImagePieces: 4,
   maxVideoQueries: 5,
   maxImageQueries: 3,
   maxTopicQueries: 2,
@@ -549,13 +549,13 @@ export function assemblePieces(
   // 3) Fill any remaining time with relevant still images (Ken Burns zoom happens in the renderer).
   let remaining = requiredSec - covered;
   if (remaining > TUNING.gapToleranceSec && images.length > 0) {
-    const count = Math.min(images.length, TUNING.maxImagePieces, Math.max(1, Math.ceil(remaining / TUNING.imageMaxSec)));
-    for (let i = 0; i < count; i++) {
-      const share = i === count - 1 ? remaining - (remaining / count) * i : remaining / count;
-      chosen.push({ candidate: images[i], durationSec: share });
+    const count = Math.min(images.length, TUNING.maxImagePieces, Math.ceil(remaining / TUNING.imageMaxSec));
+    for (let i = 0; i < count && remaining > TUNING.gapToleranceSec; i++) {
+      const take = Math.min(TUNING.imageMaxSec, remaining);
+      chosen.push({ candidate: images[i], durationSec: take });
+      covered += take;
+      remaining -= take;
     }
-    covered = requiredSec;
-    remaining = 0;
   }
 
   let cursor = 0;

@@ -86,58 +86,65 @@ function sentenceChunks(text: string): string[] {
   const sentences = text.match(/[^.!?]+[.!?]*/g)?.map((s) => s.trim()).filter(Boolean) ?? [];
   const source = sentences.length ? sentences : [text.trim()];
   const chunks: string[] = [];
-  const maxWords = 6;
+  const maxWords = 10;
   for (const sentence of source) {
-    const words = sentence.split(/\s+/).filter(Boolean);
-    if (words.length <= maxWords) { if (sentence) chunks.push(sentence); continue; }
-    // Prefer clause boundaries, then cap each shot to about four seconds of speech.
+    // Keep clauses together where possible, but never let a visual search beat become a full paragraph.
     const clauses = sentence.split(/(?<=[,;:])\s+/).filter(Boolean);
+    let pending: string[] = [];
     for (const clause of clauses) {
-      const clauseWords = clause.split(/\s+/).filter(Boolean);
-      for (let i = 0; i < clauseWords.length; i += maxWords) chunks.push(clauseWords.slice(i, i + maxWords).join(" "));
+      const words = clause.split(/\s+/).filter(Boolean);
+      for (const word of words) {
+        pending.push(word);
+        if (pending.length >= maxWords) {
+          chunks.push(pending.join(" "));
+          pending = [];
+        }
+      }
+      // Prefer a clause boundary when the current chunk is already substantial.
+      if (pending.length >= 9) {
+        chunks.push(pending.join(" "));
+        pending = [];
+      }
     }
+    if (pending.length) chunks.push(pending.join(" "));
   }
+
   return chunks.length ? chunks : [text.trim()].filter(Boolean);
 }
 
 export function splitIntoVisualBeats(segment: ScriptSegment): VisualBeat[] {
-  const chunks = sentenceChunks(segment.narration);
-  if (chunks.length <= 1) return [{ segment, offset_sec: 0, duration_sec: round1(segment.end_sec - segment.start_sec) }];
   const total = Math.max(0.1, segment.end_sec - segment.start_sec);
+  let chunks = sentenceChunks(segment.narration);
+  const words = segment.narration.split(/\s+/).filter(Boolean);
+
+  // A long spoken segment must not remain one visual shot merely because its sentence is short.
+  // Estimate a practical number of shots from its actual rescaled audio duration.
+  const desiredCount = Math.max(1, Math.ceil(total / BEAT_TARGET_SECONDS));
+  if (chunks.length < desiredCount && words.length >= desiredCount) {
+    const targetWords = Math.ceil(words.length / desiredCount);
+    const split: string[] = [];
+    for (let i = 0; i < words.length; i += targetWords) split.push(words.slice(i, i + targetWords).join(" "));
+    chunks = split;
+  }
+
+  if (chunks.length <= 1) return [{ segment, offset_sec: 0, duration_sec: round1(total) }];
+
+  // Allocate the real parent audio duration proportionally to spoken words. This keeps all beats
+  // contiguous and preserves the exact scene duration after the original voiceover is rescaled.
   const weights = chunks.map((chunk) => Math.max(1, wordCount(chunk)));
   const totalWords = weights.reduce((a, b) => a + b, 0);
-  const raw = weights.map((w) => total * w / totalWords);
-  const groups = chunks.map((text, i) => ({ text, weight: weights[i] }));
-  for (let i = 0; i < groups.length; i++) {
-    const estimated = (groups[i].weight / totalWords) * total;
-    if (estimated >= BEAT_MIN_SECONDS || groups.length === 1) continue;
-    const neighbour = i > 0 ? i - 1 : i + 1;
-    const combined = groups[neighbour].weight + groups[i].weight;
-    if ((combined / totalWords) * total <= BEAT_MAX_SECONDS) {
-      if (neighbour < i) {
-        groups[neighbour].text += ` ${groups[i].text}`;
-        groups[neighbour].weight = combined;
-        groups.splice(i, 1);
-        i--;
-      } else {
-        groups[i].text += ` ${groups[neighbour].text}`;
-        groups[i].weight = combined;
-        groups.splice(neighbour, 1);
-      }
-    }
-  }
   let cursor = 0;
-  return groups.map((group, i) => {
-    const duration = i === groups.length - 1 ? total - cursor : total * group.weight / groups.reduce((a, b) => a + b.weight, 0);
+  return chunks.map((text, i) => {
+    const duration = i === chunks.length - 1 ? total - cursor : total * weights[i] / totalWords;
     const beat: ScriptSegment = {
       ...segment,
       index: segment.index * 100 + i,
       label: `${segment.label} beat ${i + 1}`,
-      narration: group.text,
-      broll: group.text,
+      narration: text,
+      broll: text,
       on_screen_text: null,
       search_queries: [],
-      subject_keywords: group.text.toLowerCase().match(/[a-z0-9]{4,}/g)?.slice(0, 5) ?? [],
+      subject_keywords: text.toLowerCase().match(/[a-z0-9]{4,}/g)?.slice(0, 5) ?? [],
       start_sec: round1(segment.start_sec + cursor),
       end_sec: round1(segment.start_sec + cursor + duration),
     };

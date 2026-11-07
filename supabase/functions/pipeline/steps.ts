@@ -231,6 +231,8 @@ async function selectStockMedia(pkg: VideoPackage, apiKey: string, job: Assembly
     status: plan.status,
     required_sec: plan.requiredSec,
     covered_sec: plan.coveredSec,
+    uncovered_sec: Math.max(0, Math.round((plan.requiredSec - plan.coveredSec) * 100) / 100),
+    visual_coverage_percent: plan.requiredSec > 0 ? Math.round((plan.coveredSec / plan.requiredSec) * 1000) / 10 : 0,
     queries: plan.queriesTried,
     notes: plan.notes,
     assets: plan.pieces.map((p) => ({

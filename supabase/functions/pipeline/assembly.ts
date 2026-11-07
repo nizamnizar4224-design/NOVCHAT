@@ -44,6 +44,25 @@ const CENTER = { x: "50%", y: "50%", x_anchor: "50%", y_anchor: "50%" } as const
 const FULL_FRAME = { ...CENTER, width: "100%", height: "100%" } as const;
 const CTA_PATTERN = /(subscribe|like|bell)/i;
 
+/**
+ * When no genuinely relevant media exists, show an animated information card derived from the
+ * current narration beat instead of leaving a long, empty branded background. This is an honest
+ * graphic fallback, not fabricated stock footage.
+ */
+function buildNarrationCard(segment: ScriptSegment, start: number, duration: number, ordinal: number): Record<string, unknown>[] {
+  const rawTitle = (segment.on_screen_text || segment.label || "Key point").trim();
+  const title = rawTitle.replace(/\s+/g, " ").slice(0, 54).toUpperCase();
+  const subline = segment.narration.replace(/\s+/g, " ").trim().slice(0, 105);
+  const pop = { time: 0, duration: Math.min(0.45, duration * 0.2), type: "scale", easing: "quadratic-out", fade: true, start_scale: "94%", end_scale: "100%" };
+  const track = 8 + ordinal * 4;
+  return [
+    { type: "shape", track, time: start, duration, ...CENTER, x: "50%", y: "50%", width: "86%", height: "36%", fill_color: "#10213d", opacity: "92%", animations: [pop] },
+    { type: "shape", track: track + 1, time: start + Math.min(0.18, duration * 0.08), duration: Math.max(0.3, duration - 0.18), ...CENTER, x: "50%", y: "34%", width: "20%", height: "1.2%", fill_color: "#38bdf8", animations: [{ time: 0, duration: Math.min(0.35, duration * 0.15), type: "scale", easing: "quadratic-out", fade: true, start_scale: "0%", end_scale: "100%" }] },
+    { type: "text", track: track + 2, time: start + Math.min(0.12, duration * 0.06), duration: Math.max(0.3, duration - 0.12), ...CENTER, x: "50%", y: "46%", width: "76%", text: title, font_family: "Montserrat", font_weight: "800", font_size: "6 vmin", fill_color: "#ffffff", x_alignment: "50%", y_alignment: "50%", animations: [{ ...pop, type: "text-slide", direction: "up" }] },
+    { type: "text", track: track + 3, time: start + Math.min(0.28, duration * 0.12), duration: Math.max(0.25, duration - 0.28), ...CENTER, x: "50%", y: "59%", width: "76%", text: subline, font_family: "Montserrat", font_weight: "500", font_size: "3.1 vmin", fill_color: "#dbeafe", x_alignment: "50%", y_alignment: "50%" },
+  ];
+}
+
 /** Time (seconds, relative to the scene) at which the narration reaches the first matching word. */
 export function cueTimeInScene(segment: ScriptSegment, pattern: RegExp): number | null {
   const words = segment.narration.split(/\s+/).filter(Boolean);
@@ -144,12 +163,38 @@ class CreatomateProvider implements AssemblyProvider {
       sceneElements.push({ type: "shape", track: 2, time: 0, duration: sceneDuration, ...FULL_FRAME,
         fill_color: "#000000", opacity: isLast ? "40%" : "30%" });
 
+      // Fill only uncovered timeline gaps with narration-specific animated information cards.
+      // This prevents long empty branded stretches without pretending unrelated footage is relevant.
+      if (!isLast) {
+        const sortedPieces = [...pieces].sort((a, b) => a.offset_sec - b.offset_sec);
+        let gapCursor = 0;
+        let cardOrdinal = 0;
+        const addGapCard = (gapStart: number, gapEnd: number) => {
+          const gapDuration = gapEnd - gapStart;
+          if (gapDuration >= 1.25) {
+            sceneElements.push(...buildNarrationCard(segment, gapStart, gapDuration, cardOrdinal++));
+          }
+        };
+        for (const piece of sortedPieces) {
+          const pieceStart = Math.max(0, piece.offset_sec);
+          const pieceEnd = Math.min(sceneDuration, piece.offset_sec + piece.duration_sec);
+          if (pieceStart > gapCursor) addGapCard(gapCursor, pieceStart);
+          gapCursor = Math.max(gapCursor, pieceEnd);
+        }
+        if (gapCursor < sceneDuration) addGapCard(gapCursor, sceneDuration);
+      }
+
       // Headline: centred horizontally and vertically, inside a 10% safe margin, shown briefly so
       // the footage stays visible. The closing scene draws its own call to action instead.
       const rawHeadline = (segment.on_screen_text || segment.label || "").trim();
       const hookFallback = isHook ? job.title.split(/\s+/).slice(0, 5).join(" ") : "";
       const headline = (rawHeadline || hookFallback).slice(0, 60);
-      const showHeadline = headline !== "" && !(isLast && CTA_PATTERN.test(headline));
+      const sortedForCoverage = [...pieces].sort((a, b) => a.offset_sec - b.offset_sec);
+      const hasFullVisualCoverage = sortedForCoverage.length > 0
+        && sortedForCoverage[0].offset_sec <= 0.2
+        && sortedForCoverage[sortedForCoverage.length - 1].offset_sec + sortedForCoverage[sortedForCoverage.length - 1].duration_sec >= sceneDuration - 0.2;
+      // When gaps need narration cards, hide the global headline to avoid stacking two text blocks.
+      const showHeadline = headline !== "" && !(isLast && CTA_PATTERN.test(headline)) && (hasFullVisualCoverage || isLast);
       if (showHeadline) {
         const shown = Math.min(sceneDuration, isHook ? 6 : 4.5);
         sceneElements.push({

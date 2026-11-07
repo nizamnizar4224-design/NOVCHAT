@@ -155,14 +155,15 @@ test("only 5s needed from a 15s clip: only 5s is used", async () => {
   assert.equal(plan.pieces[0].trimStartSec, 0);
 });
 
-test("a 25s scene may be covered by images when no video fits; each image <= ~10s", async () => {
+test("images never hold longer than 5s; uncovered time remains an honest gap", async () => {
   const src = new FakeSource({ "*": [] }, { "*": [image("calculator, finance"), image("calculator, accounting, numbers"), image("calculator, money, desk")] });
   const scene: SceneForSearch = { index: 4, label: "Calculator", narration: "Use a calculator", broll: "calculator on desk", on_screen_text: null };
   const plan = await planScene(scene, 25, src, createLedger(), { topicText: "mutual funds calculator", isFinalScene: false });
-  assert.equal(plan.status, "full");
+  assert.equal(plan.status, "partial");
   assert.equal(plan.pieces.length, 3);
   assert.ok(plan.pieces.every((p) => p.candidate.kind === "image"));
-  assert.ok(Math.abs(plan.pieces.reduce((s, p) => s + p.durationSec, 0) - 25) < 0.05);
+  assert.ok(plan.pieces.every((p) => p.durationSec <= 5), "still images must change at least every five seconds");
+  assert.ok(plan.coveredSec <= 15.05, "do not pretend three images cover a 25-second scene");
 });
 
 test("portrait video and tiny clips are rejected", async () => {

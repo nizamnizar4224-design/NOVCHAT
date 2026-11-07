@@ -57,10 +57,19 @@ test("pieces: contiguous, inside the scene, videos muted and trimmed, images zoo
   assert.ok(!("loop" in media[0]), "no looping");
 });
 
-test("scene without media keeps only the branded backdrop colour (no fake footage)", () => {
-  const scene3 = script().elements.find((e: any) => e.name === "Scene-3");
-  assert.ok(scene3.fill_color);
-  assert.equal(scene3.elements.filter((e: any) => e.type === "video" || e.type === "image").length, 0);
+test("uncovered non-CTA scene gets an animated narration-specific card, not an empty background", () => {
+  const job = buildAssemblyJob({ packageId: "p", title: "Invest From Your Phone Today", voiceUrl: "https://v/a.mp3", segments });
+  job.broll[1].pieces = [];
+  const provider = getAssemblyProvider("creatomate", "k", null) as unknown as { buildRenderScript(j: unknown): any };
+  const rendered = provider.buildRenderScript(job);
+  const scene2 = rendered.elements.find((e: any) => e.name === "Scene-2");
+  assert.ok(scene2.fill_color);
+  assert.equal(scene2.elements.filter((e: any) => e.type === "video" || e.type === "image").length, 0);
+  const cardTitle = scene2.elements.find((e: any) => e.text === "COMPARE FUNDS");
+  assert.ok(cardTitle, "fallback card should use the scene headline");
+  const cardBody = scene2.elements.find((e: any) => e.text?.includes("Open the app"));
+  assert.ok(cardBody, "fallback card should be derived from the actual narration");
+  assert.ok(cardTitle.x_anchor === "50%" && cardTitle.y_anchor === "50%");
 });
 
 test("closing scene has like, subscribe button, bell; unique tracks; synced to narration", () => {
@@ -96,4 +105,13 @@ test("long narration segments split into short, ordered visual beats without cha
   for (let i = 1; i < beats.length; i++) {
     assert.ok(Math.abs(beats[i].offset_sec - (beats[i - 1].offset_sec + beats[i - 1].duration_sec)) < 0.11, "beats must be contiguous");
   }
+});
+
+
+test("a short sentence with a long actual voice duration still gets multiple visual beats", () => {
+  const slow = seg(9, 0, 12, "Dividend yield is important for investors.", null);
+  const beats = splitIntoVisualBeats(slow);
+  assert.ok(beats.length >= 3, `expected short visual beats, got ${beats.length}`);
+  assert.ok(Math.abs(beats.reduce((sum, beat) => sum + beat.duration_sec, 0) - 12) < 0.11);
+  assert.ok(beats.every((beat) => beat.duration_sec <= 5.1), "no single shot should hold for the full 12 seconds");
 });
