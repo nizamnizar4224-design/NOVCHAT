@@ -117,7 +117,7 @@ test("a short sentence with a long actual voice duration still gets multiple vis
 });
 
 
-test("visual beats keep only parent search hints that match the exact beat", () => {
+test("visual beats keep exact-beat hints and carry named entities across adjacent beats", () => {
   const source: ScriptSegment = {
     ...seg(12, 0, 16, "Dhanush received an award for his performance. Later, the film soundtrack became popular.", null),
     broll: "Dhanush award ceremony film soundtrack concert generic cinema audience",
@@ -130,4 +130,6 @@ test("visual beats keep only parent search hints that match the exact beat", () 
   assert.ok(first.search_queries?.some((q) => q.includes("dhanush") || q.includes("award")));
   assert.ok(!first.search_queries?.some((q) => q.includes("soundtrack") || q.includes("concert")));
   assert.ok(!first.broll.includes("soundtrack") && !first.broll.includes("concert"));
+  assert.ok(beats.some((beat) => beat.segment.search_queries?.some((q) => q.includes("soundtrack") || q.includes("concert"))));
+  assert.ok(beats.every((beat) => beat.segment.broll.includes("dhanush")));
 });

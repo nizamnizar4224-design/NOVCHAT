@@ -117,15 +117,26 @@ function visualTerms(text: string): Set<string> {
   return new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4));
 }
 
-function relevantParentTerms(values: string[] | undefined, beatText: string): string[] {
+function namedEntityTerms(values: string[] | undefined): Set<string> {
+  const names = new Set<string>();
+  for (const value of values ?? []) {
+    // Keep capitalized proper-name tokens (e.g. Dhanush, Kerala, iPhone) available to
+    // adjacent visual beats even when the narration mentions the name in a neighbouring clause.
+    for (const token of value.split(/[^A-Za-z0-9]+/).filter(Boolean)) {
+      if (/^[A-Z][a-zA-Z0-9]{2,}$/.test(token) || /^[A-Z]{2,}$/.test(token)) names.add(token.toLowerCase());
+    }
+  }
+  return names;
+}
+
+function relevantParentTerms(values: string[] | undefined, beatText: string, carry = new Set<string>()): string[] {
   const beatTerms = visualTerms(beatText);
   if (beatTerms.size === 0) return [];
   const matched: string[] = [];
   for (const value of values ?? []) {
-    const terms = [...visualTerms(value)].filter((term) => beatTerms.has(term) || [...beatTerms].some((beat) =>
+    const terms = [...visualTerms(value)].filter((term) => carry.has(term) || beatTerms.has(term) || [...beatTerms].some((beat) =>
       (term.length >= 5 && beat.startsWith(term.slice(0, 5))) || (beat.length >= 5 && term.startsWith(beat.slice(0, 5)))
     ));
-    // Keep only the words that belong to this narration beat, never the full broad parent query.
     for (const term of terms) if (!matched.includes(term)) matched.push(term);
   }
   return matched;
@@ -135,6 +146,11 @@ export function splitIntoVisualBeats(segment: ScriptSegment): VisualBeat[] {
   const total = Math.max(0.1, segment.end_sec - segment.start_sec);
   let chunks = sentenceChunks(segment.narration);
   const words = segment.narration.split(/\s+/).filter(Boolean);
+  const carryNames = namedEntityTerms([
+    segment.broll,
+    ...(segment.search_queries ?? []),
+    ...(segment.subject_keywords ?? []),
+  ]);
 
   // A long spoken segment must not remain one visual shot merely because its sentence is short.
   // Estimate a practical number of shots from its actual rescaled audio duration.
@@ -160,18 +176,19 @@ export function splitIntoVisualBeats(segment: ScriptSegment): VisualBeat[] {
       index: segment.index * 100 + i,
       label: `${segment.label} beat ${i + 1}`,
       narration: text,
-      // Keep only parent visual hints that are actually mentioned in this beat. This avoids
-      // both extremes: losing useful named subjects and leaking the whole scene's unrelated query.
+      // A visual beat is a shorter shot inside the same parent scene, not a new topic.
+      // Preserve the parent scene's concrete visual brief and named entities across its beats.
+      // Filtering hints by literal word overlap used to drop proper nouns (e.g. a film/person
+      // name) whenever that name was spoken in a neighbouring clause rather than this beat.
       broll: [
-        ...relevantParentTerms([segment.broll], text),
+        ...relevantParentTerms([segment.broll], text, carryNames),
         text,
       ].join(" ").slice(0, 300),
       on_screen_text: null,
-      search_queries: relevantParentTerms(segment.search_queries, text),
-      subject_keywords: [
-        ...relevantParentTerms(segment.subject_keywords, text),
-        ...(text.toLowerCase().match(/[a-z0-9]{4,}/g)?.slice(0, 5) ?? []),
-      ].slice(0, 6),
+      search_queries: (segment.search_queries ?? []).filter((query) =>
+        relevantParentTerms([query], text, carryNames).length > 0
+      ).slice(0, 5),
+      subject_keywords: relevantParentTerms(segment.subject_keywords, text, carryNames).slice(0, 4),
       start_sec: round1(segment.start_sec + cursor),
       end_sec: round1(segment.start_sec + cursor + duration),
     };
