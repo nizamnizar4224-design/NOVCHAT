@@ -163,3 +163,35 @@ export async function createSignedFileUrl(path: string, expiresInSeconds: number
   if (error || !data) throw new Error(`Could not share voiceover file: ${error?.message ?? "unknown error"}`);
   return data.signedUrl;
 }
+
+
+/**
+ * Remove only temporary Pixabay stock files after the final MP4 has been safely saved.
+ * Keep final.mp4, voiceover.mp3, thumbnail.*, and the database scene_assets audit summary.
+ * Storage list/remove failures are returned to the caller for best-effort logging.
+ */
+export async function cleanupTemporaryStockAssets(packageId: string): Promise<number> {
+  const bucket = db.storage.from(BUCKET);
+  const prefix = packageId;
+  const paths: string[] = [];
+  const pageSize = 100;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await bucket.list(prefix, { limit: pageSize, offset, sortBy: { column: "name", order: "asc" } });
+    if (error) throw new Error(`Could not list temporary stock assets: ${error.message}`);
+    const entries = data ?? [];
+    for (const entry of entries) {
+      if (entry.name.startsWith("stock-scene-") && /\.(mp4|jpg|jpeg|png|webp)$/i.test(entry.name)) {
+        paths.push(`${prefix}/${entry.name}`);
+      }
+    }
+    if (entries.length < pageSize) break;
+  }
+  let removed = 0;
+  for (let i = 0; i < paths.length; i += 100) {
+    const batch = paths.slice(i, i + 100);
+    const { data, error } = await bucket.remove(batch);
+    if (error) throw new Error(`Could not remove temporary stock assets: ${error.message}`);
+    removed += data?.length ?? batch.length;
+  }
+  return removed;
+}
