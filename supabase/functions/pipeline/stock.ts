@@ -645,6 +645,8 @@ export type PlanOptions = {
   isFinalScene: boolean;
   /** Asked before every search; return true to stop searching for this scene. */
   shouldStop?: (ctx: SearchContext) => boolean;
+  /** Disable broad whole-video topic fallback for tightly scoped visual beats. */
+  allowTopicFallback?: boolean;
 };
 
 export async function planScene(
@@ -715,7 +717,7 @@ export async function planScene(
 
   // Stage 3 (last resort before a branded background): footage about the overall video topic.
   const sceneCoverage = assemblePieces(requiredSec, [...videos.values()], [...images.values()]);
-  if (sceneCoverage.coveredSec < requiredSec - TUNING.gapToleranceSec && plan.topicConcepts.length > 0) {
+  if (options.allowTopicFallback !== false && sceneCoverage.coveredSec < requiredSec - TUNING.gapToleranceSec && plan.topicConcepts.length > 0) {
     for (const query of plan.topicQueries.slice(0, TUNING.maxTopicQueries)) {
       if (stopped("video")) break;
       await run("video", query, "topic");

@@ -70,6 +70,83 @@ export function estimateMp3Seconds(byteLength: number, kbps = 128): number {
   return (byteLength * 8) / (kbps * 1000);
 }
 
+
+
+/**
+ * Split a long narration segment into short visual beats. These beats are only for visual search;
+ * the original narration segment and audio timeline remain unchanged.
+ */
+export type VisualBeat = { segment: ScriptSegment; offset_sec: number; duration_sec: number };
+
+const BEAT_TARGET_SECONDS = 3.8;
+const BEAT_MAX_SECONDS = 5;
+const BEAT_MIN_SECONDS = 2;
+
+function sentenceChunks(text: string): string[] {
+  const sentences = text.match(/[^.!?]+[.!?]*/g)?.map((s) => s.trim()).filter(Boolean) ?? [];
+  const source = sentences.length ? sentences : [text.trim()];
+  const chunks: string[] = [];
+  const maxWords = 6;
+  for (const sentence of source) {
+    const words = sentence.split(/\s+/).filter(Boolean);
+    if (words.length <= maxWords) { if (sentence) chunks.push(sentence); continue; }
+    // Prefer clause boundaries, then cap each shot to about four seconds of speech.
+    const clauses = sentence.split(/(?<=[,;:])\s+/).filter(Boolean);
+    for (const clause of clauses) {
+      const clauseWords = clause.split(/\s+/).filter(Boolean);
+      for (let i = 0; i < clauseWords.length; i += maxWords) chunks.push(clauseWords.slice(i, i + maxWords).join(" "));
+    }
+  }
+  return chunks.length ? chunks : [text.trim()].filter(Boolean);
+}
+
+export function splitIntoVisualBeats(segment: ScriptSegment): VisualBeat[] {
+  const chunks = sentenceChunks(segment.narration);
+  if (chunks.length <= 1) return [{ segment, offset_sec: 0, duration_sec: round1(segment.end_sec - segment.start_sec) }];
+  const total = Math.max(0.1, segment.end_sec - segment.start_sec);
+  const weights = chunks.map((chunk) => Math.max(1, wordCount(chunk)));
+  const totalWords = weights.reduce((a, b) => a + b, 0);
+  const raw = weights.map((w) => total * w / totalWords);
+  const groups = chunks.map((text, i) => ({ text, weight: weights[i] }));
+  for (let i = 0; i < groups.length; i++) {
+    const estimated = (groups[i].weight / totalWords) * total;
+    if (estimated >= BEAT_MIN_SECONDS || groups.length === 1) continue;
+    const neighbour = i > 0 ? i - 1 : i + 1;
+    const combined = groups[neighbour].weight + groups[i].weight;
+    if ((combined / totalWords) * total <= BEAT_MAX_SECONDS) {
+      if (neighbour < i) {
+        groups[neighbour].text += ` ${groups[i].text}`;
+        groups[neighbour].weight = combined;
+        groups.splice(i, 1);
+        i--;
+      } else {
+        groups[i].text += ` ${groups[neighbour].text}`;
+        groups[i].weight = combined;
+        groups.splice(neighbour, 1);
+      }
+    }
+  }
+  let cursor = 0;
+  return groups.map((group, i) => {
+    const duration = i === groups.length - 1 ? total - cursor : total * group.weight / groups.reduce((a, b) => a + b.weight, 0);
+    const beat: ScriptSegment = {
+      ...segment,
+      index: segment.index * 100 + i,
+      label: `${segment.label} beat ${i + 1}`,
+      narration: group.text,
+      broll: group.text,
+      on_screen_text: null,
+      search_queries: [],
+      subject_keywords: group.text.toLowerCase().match(/[a-z0-9]{4,}/g)?.slice(0, 5) ?? [],
+      start_sec: round1(segment.start_sec + cursor),
+      end_sec: round1(segment.start_sec + cursor + duration),
+    };
+    const result = { segment: beat, offset_sec: round1(cursor), duration_sec: round1(duration) };
+    cursor += duration;
+    return result;
+  });
+}
+
 export function formatTimestamp(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
   const m = Math.floor(total / 60);

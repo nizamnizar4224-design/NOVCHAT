@@ -24,7 +24,7 @@ import {
 } from "./providers.ts";
 import { getYouTubeAccessToken, setYouTubeThumbnail, uploadYouTubeVideo } from "./youtube.ts";
 import { isRetryableError, PermanentError, stepBackoffMs } from "./retry.ts";
-import { estimateMp3Seconds, rescaleTimeline } from "./timeline.ts";
+import { estimateMp3Seconds, rescaleTimeline, splitIntoVisualBeats } from "./timeline.ts";
 import { type AssemblyJob, type BrollClip, buildAssemblyJob, getAssemblyProvider } from "./assembly.ts";
 import { PixabayClient } from "./pixabay.ts";
 import { createLedger, DEFAULT_SEARCH_BUDGET, planScene, type ScenePlan, SearchBudget } from "./stock.ts";
@@ -147,35 +147,55 @@ async function selectStockMedia(pkg: VideoPackage, apiKey: string, job: Assembly
   const ledger = createLedger();
   const topicText = `${pkg.topic ?? ""} ${pkg.title ?? ""}`;
   const segments = pkg.script_segments ?? [];
+  const allBeats = job.broll.flatMap((clip) => {
+    const parent = segments.find((seg) => seg.index === clip.scene_index);
+    return parent ? splitIntoVisualBeats(parent) : [];
+  });
   const selections: SceneSelection[] = [];
+  let beatOrdinal = 0;
   // Fair-share budget: every scene gets its own slice of time and requests (see SearchBudget). The
   // hard limit is only a safety net for the whole video; it is not a shared per-scene deadline.
   const budget = new SearchBudget(
-    { ...DEFAULT_SEARCH_BUDGET, totalRequests: client.maxRequests, sceneCount: job.broll.length },
+    { ...DEFAULT_SEARCH_BUDGET, totalRequests: client.maxRequests, sceneCount: allBeats.length },
     { now: Date.now, requestsUsed: () => client.requests },
   );
 
   for (const clip of job.broll) {
     const segment = segments.find((seg) => seg.index === clip.scene_index);
     if (!segment) continue;
-    await setActivity(`${label} Finding stock footage for scene ${clip.scene_index + 1} of ${job.broll.length}`);
-    const requiredSec = Math.max(1, clip.end_sec - clip.start_sec);
-    let plan: ScenePlan;
-    const shouldStop = budget.startScene(selections.length);
-    try {
-      plan = await planScene(segment, requiredSec, client, ledger, {
-        topicText,
-        isFinalScene: clip.scene_index === job.broll.length - 1,
-        shouldStop,
-      });
-    } catch (error) {
-      // One failed scene must not prevent the rest of the video from rendering.
-      console.warn(`Stock planning for scene ${clip.scene_index + 1} failed:`, error);
-      plan = { sceneIndex: clip.scene_index, requiredSec, pieces: [], coveredSec: 0, status: "none", queriesTried: [],
-        notes: [`planning error: ${error instanceof Error ? error.message : String(error)}`.slice(0, 160)] };
+    const beats = splitIntoVisualBeats(segment);
+    for (const [beatIndex, beat] of beats.entries()) {
+      await setActivity(`${label} Finding relevant shot ${beatIndex + 1}/${beats.length} for scene ${clip.scene_index + 1}`);
+      const requiredSec = Math.max(1, beat.duration_sec);
+      let plan: ScenePlan;
+      const shouldStop = budget.startScene(beatOrdinal++);
+      try {
+        plan = await planScene(beat.segment, requiredSec, client, ledger, {
+          topicText,
+          isFinalScene: clip.scene_index === job.broll.length - 1,
+          shouldStop,
+          allowTopicFallback: false,
+        });
+      } catch (error) {
+        console.warn(`Stock planning for scene ${clip.scene_index + 1}, beat ${beatIndex + 1} failed:`, error);
+        plan = { sceneIndex: beat.segment.index, requiredSec, pieces: [], coveredSec: 0, status: "none", queriesTried: [],
+          notes: [`planning error: ${error instanceof Error ? error.message : String(error)}`.slice(0, 160)] };
+      }
+      // planScene offsets are local to the beat. Shift them into the parent narration scene.
+      for (const piece of plan.pieces) piece.offsetSec += beat.offset_sec;
+      const existing = selections.find((selection) => selection.clip.scene_index === clip.scene_index);
+      if (existing) {
+        existing.plan.pieces.push(...plan.pieces);
+        existing.plan.coveredSec += plan.coveredSec;
+        existing.plan.queriesTried.push(...plan.queriesTried);
+        existing.plan.notes.push(...plan.notes);
+        existing.plan.status = existing.plan.coveredSec >= (clip.end_sec - clip.start_sec) - 0.15 ? "full" : existing.plan.coveredSec > 0 ? "partial" : "none";
+      } else {
+        selections.push({ clip, plan: { ...plan, sceneIndex: clip.scene_index } });
+      }
     }
-    selections.push({ clip, plan });
   }
+
   if (client.disabledReason) console.warn(`Pixabay searching stopped early: ${client.disabledReason}`);
 
   // Download + store every chosen asset (bounded concurrency), then sign URLs for Creatomate.

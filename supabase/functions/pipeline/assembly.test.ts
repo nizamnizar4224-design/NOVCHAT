@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildAssemblyJob, cueTimeInScene, getAssemblyProvider } from "./assembly.ts";
-import type { ScriptSegment } from "./timeline.ts";
+import { splitIntoVisualBeats, type ScriptSegment } from "./timeline.ts";
 
 const seg = (i: number, start: number, end: number, narration: string, text: string | null): ScriptSegment => ({
   index: i, start_sec: start, end_sec: end, label: `Part ${i + 1}`, narration, camera_angle: "medium", broll: "smartphone", on_screen_text: text, visual_type: "video",
@@ -79,4 +79,21 @@ test("closing scene has like, subscribe button, bell; unique tracks; synced to n
   // The headline "LIKE AND SUBSCRIBE" is not drawn twice
   assert.equal(scene3.elements.filter((e: any) => e.text === "LIKE AND SUBSCRIBE").length, 0);
   console.log(`  voice says "like" at +${expectedLike.toFixed(1)}s of 22s scene; icon appears at +${like.time.toFixed(1)}s; subscribe at +${sub.time.toFixed(1)}s`);
+});
+
+
+test("long narration segments split into short, ordered visual beats without changing total duration", () => {
+  const long = seg(8, 40, 58, "The market opens with strong buying pressure. Traders watch the live index chart. Gold prices then move higher as investors seek safety. The final move changes the market outlook.", null);
+  const beats = splitIntoVisualBeats(long);
+  assert.ok(beats.length >= 3, `expected multiple visual beats, got ${beats.length}`);
+  assert.equal(beats[0].offset_sec, 0);
+  assert.ok(Math.abs(beats.reduce((sum, beat) => sum + beat.duration_sec, 0) - 18) < 0.11);
+  for (const beat of beats) {
+    assert.ok(beat.duration_sec >= 1.9 && beat.duration_sec <= 5.1, `unexpected beat duration ${beat.duration_sec}`);
+    assert.ok(beat.segment.narration.trim().length > 0);
+    assert.deepEqual(beat.segment.search_queries, [], "do not inherit broad parent-scene search queries");
+  }
+  for (let i = 1; i < beats.length; i++) {
+    assert.ok(Math.abs(beats[i].offset_sec - (beats[i - 1].offset_sec + beats[i - 1].duration_sec)) < 0.11, "beats must be contiguous");
+  }
 });
