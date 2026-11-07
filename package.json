@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test:pipeline": "node --experimental-transform-types --test supabase/functions/pipeline/stock.test.ts supabase/functions/pipeline/assembly.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
