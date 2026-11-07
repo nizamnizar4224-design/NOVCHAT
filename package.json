@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
-    "test:pipeline": "node --experimental-transform-types --test supabase/functions/pipeline/stock.test.ts supabase/functions/pipeline/assembly.test.ts"
+    "test:pipeline": "node --experimental-transform-types --test supabase/functions/pipeline/stock.test.ts supabase/functions/pipeline/assembly.test.ts supabase/functions/pipeline/timeline.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
